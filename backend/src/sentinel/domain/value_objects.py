@@ -44,3 +44,22 @@ class Assertion:
 
     type: str
     params: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class MonitorDraft:
+    """An unsaved, reviewable monitor produced by an importer (SPEC §3.1, §4).
+    Deliberately carries no invariants: a draft may be incomplete and is meant to
+    be edited before being saved via the create endpoint. `warnings` surface
+    anything the importer could not faithfully represent."""
+
+    name: str
+    url: str
+    method: HttpMethod = HttpMethod.GET
+    headers: dict[str, str] = field(default_factory=dict)
+    query_params: dict[str, str] = field(default_factory=dict)
+    body: str | None = None
+    body_kind: BodyKind = BodyKind.NONE
+    follow_redirects: bool = False
+    assertions: list[Assertion] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)

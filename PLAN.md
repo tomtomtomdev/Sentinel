@@ -334,6 +334,22 @@ stable (after S7), against a mock server if needed.
   redaction is applied once in `MonitorResponse.from_entity` (the serialization
   boundary), never in routers.
 
+- **D14 — Import drafts are returned UNREDACTED; importing never persists.**
+  `parse_curl` (and later `parse_postman`) produce `MonitorDraft`s echoed back via
+  `POST /imports/*` for review-before-save; nothing is stored. Unlike a saved
+  `Monitor` (D5/D12), draft header values are **not** masked: the draft is an echo
+  of the user's own pasted command, and masking would corrupt the value the client
+  posts straight back to `POST /monitors` (it would save `"••••"`). This matches the
+  SPEC §5 example (`"X-Api-Key": "k"`). Redaction still applies at the *persisted*
+  monitor boundary; logging a command is still forbidden. `MonitorDraft` is a
+  validation-free value object (a draft may be incomplete; the create endpoint
+  enforces invariants). curl `-u user:pass` maps to an `Authorization: Basic …`
+  header (consistent with header handling; no secret store exists until S5a). The
+  pure parser is called directly from the route — no `application` use case, since
+  there is no I/O to orchestrate. Known v1 limits (logged via warnings or parked):
+  query string kept in `url` (not split into `query_params`), bundled short flags
+  (`-fsSL`) treated as one unknown flag, `--data @file` kept literally.
+
 _Append new decisions here as `Dn — <decision>: <why>` when slices force a choice._
 
 ---

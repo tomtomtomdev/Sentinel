@@ -20,7 +20,14 @@ from sentinel.domain.entities import (
     Monitor,
 )
 from sentinel.domain.logic.redaction import redact
-from sentinel.domain.value_objects import Assertion, Auth, AuthType, BodyKind, HttpMethod
+from sentinel.domain.value_objects import (
+    Assertion,
+    Auth,
+    AuthType,
+    BodyKind,
+    HttpMethod,
+    MonitorDraft,
+)
 
 
 class AuthDTO(BaseModel):
@@ -174,3 +181,44 @@ def _auth_to_entity(auth: AuthDTO | None) -> Auth | None:
     if auth is None:
         return None
     return Auth(type=AuthType(auth.type), secret_ref=auth.secret_ref)
+
+
+class CurlImportRequest(BaseModel):
+    command: str
+
+
+class MonitorDraftResponse(BaseModel):
+    """An importer's parsed draft (SPEC §3.1, §5). Unlike `MonitorResponse`, draft
+    headers are NOT redacted: the draft is an echo of the user's own input shown
+    for review before saving, and masking would corrupt the value the client posts
+    back to create the monitor. Nothing here is persisted."""
+
+    name: str
+    method: HttpMethod
+    url: str
+    headers: dict[str, str]
+    query_params: dict[str, str]
+    body: str | None
+    body_kind: BodyKind
+    follow_redirects: bool
+    assertions: list[AssertionDTO]
+    warnings: list[str]
+
+    @classmethod
+    def from_draft(cls, draft: MonitorDraft) -> MonitorDraftResponse:
+        return cls(
+            name=draft.name,
+            method=draft.method,
+            url=draft.url,
+            headers=draft.headers,
+            query_params=draft.query_params,
+            body=draft.body,
+            body_kind=draft.body_kind,
+            follow_redirects=draft.follow_redirects,
+            assertions=[AssertionDTO(type=a.type, params=a.params) for a in draft.assertions],
+            warnings=draft.warnings,
+        )
+
+
+class CurlImportResponse(BaseModel):
+    drafts: list[MonitorDraftResponse]

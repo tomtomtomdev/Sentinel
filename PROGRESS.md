@@ -20,22 +20,24 @@
 
 ## Current state
 
-- **Phase:** S2 complete — Monitor CRUD API (redaction + SPEC §5 error envelope).
-- **Last green commit:** S2 (see detailed log below).
-- **Test suite:** 49 tests. `just test` (no DB) → 43 passed, 6 skipped (PG params).
-  With `TEST_DATABASE_URL` set → 49 passed (real Postgres contract).
-- **Schema/migrations:** unchanged from S1 — CRUD uses the existing `monitors`
-  table; no new migration. Alembic `6518c1e8…` still head.
+- **Phase:** S3 complete — curl import (`parse_curl` + `POST /imports/curl`).
+- **Last green commit:** S3 (see detailed log below).
+- **Test suite:** 80 tests. `just test` (no DB) → 74 passed, 6 skipped (PG params).
+  With `TEST_DATABASE_URL` set → 80 passed (real Postgres contract).
+- **Schema/migrations:** unchanged from S1 — imports persist nothing; CRUD uses
+  the existing `monitors` table. Alembic `6518c1e8…` still head.
 - **Deployed:** no.
 
 ## Next action
 
-➡️ **Begin S3 — curl import** (`PLAN.md §5`). Pure `parse_curl(command) ->
-MonitorDraft` in `domain/logic/` (table-driven unit tests over many curl shapes:
-`-X`, `-H`, `-d`/`--data*`, `--url`/bare URL, `-u`, `--compressed`, `-L`; unknown
-flags → per-draft warning), then `POST /api/v1/imports/curl` returning unsaved
-drafts (`{"drafts": [...]}`, never persisted). Treat the curl string as untrusted
-data. Read **sentinel-architecture** first. (`MonitorDraft` value object is new.)
+➡️ **Begin S4 — Postman import** (`PLAN.md §5`). Pure `parse_postman(collection)
+-> list[MonitorDraft]` in `domain/logic/` (flatten folders → one draft per request
+item; resolve `{{var}}` against the collection `variable` block, unresolved vars →
+per-draft warning), then `POST /api/v1/imports/postman` (multipart file upload).
+Reuse `MonitorDraft` + the import DTO/response shape from S3. Fixture-based unit
+tests over a small v2.1 collection (one request in a folder, one using a var, one
+undefined var). Treat collection content as untrusted data. Read
+**sentinel-architecture** first.
 
 ---
 
@@ -44,7 +46,7 @@ data. Read **sentinel-architecture** first. (`MonitorDraft` value object is new.
 - [x] **S0** Scaffold & green harness
 - [x] **S1** Monitor entity + repository (+ Alembic init)
 - [x] **S2** Monitor CRUD API (+ header redaction)
-- [ ] **S3** curl import
+- [x] **S3** curl import
 - [ ] **S4** Postman import
 - [ ] **S5** Probe + assertions engine
 - [ ] **S5a** Secret-at-rest (`SecretBox` / Fernet)
@@ -77,6 +79,41 @@ data. Read **sentinel-architecture** first. (`MonitorDraft` value object is new.
 > Commit(s): <conventional commit subject lines>
 > Resume hint: <the very next concrete step>
 > ```
+
+### S3 — curl import  · 2026-06-26
+Done: `POST /api/v1/imports/curl` parses a raw curl command into one reviewable
+`MonitorDraft` and returns `{"drafts": [...]}` — nothing is persisted. Pure
+`parse_curl(command) -> MonitorDraft` handles `-X`/`--request` (incl. `-XPOST`
+attached form), `-H`/`--header` (`-H` attached too), `-d`/`--data*` (multiple
+joined with `&`, `-d` implies POST), `--url`/bare URL, `-u`/`--user`
+(→ `Authorization: Basic <b64>`), `--compressed`, `-L`/`--location`
+(→ follow_redirects). Body kind inferred from Content-Type then shape
+(json/form/raw). Name derived as `"<METHOD> <path>"`. Unknown flags, unparseable
+headers, missing URL, and unsupported methods surface as per-draft `warnings`
+(parse never raises). Handles multi-line `\`-continuations and shlex quoting.
+Draft headers are returned **unredacted** (review-before-save echo, SPEC §5).
+Tests: `tests/unit/domain/test_parse_curl.py` (26 — table-driven: basics, method/
+body, body-kind inference, the §7 acceptance curl, flags, robustness);
+`tests/integration/test_curl_import_api.py` (5 — §5 shape, no-redaction,
+JSON body, warning surfaced, missing `command` → 422 envelope). Suite: 74 passed
+/ 6 skipped without a DB; 80 with PG. mypy strict + ruff clean.
+Decisions: **D14** (import drafts unredacted + never persisted; `MonitorDraft` is
+validation-free; `-u` → Basic header; pure parser called directly from the route,
+no use case; documented v1 parser limits) added to PLAN §7.
+Files: `src/sentinel/domain/value_objects.py` (+`MonitorDraft`),
+`src/sentinel/domain/logic/curl_import.py`,
+`src/sentinel/interface/api/{schemas.py (+import DTOs),imports.py}`,
+`src/sentinel/interface/main.py` (wire imports router),
+`tests/unit/domain/test_parse_curl.py`, `tests/integration/test_curl_import_api.py`.
+Follow-ups / parked: query string kept in `url` (not split to `query_params`);
+bundled short flags (`-fsSL`) treated as one unknown flag; `--data @file` kept
+literally; basic-auth secret stored plaintext in the Authorization header until
+S5a. All low-priority; surfaced via warnings where it matters.
+Commit(s): `feat(import): parse curl into reviewable monitor drafts (S3)`.
+Resume hint: start S4 — write the failing fixture-based unit test for
+`parse_postman(collection) -> list[MonitorDraft]` (folder flatten + `{{var}}`
+resolution + unresolved-var warning) before the `POST /imports/postman` multipart
+endpoint; reuse the S3 draft DTO.
 
 ### S2 — Monitor CRUD API (+ header redaction)  · 2026-06-26
 Done: Full CRUD over `/api/v1/monitors` — `POST` (201), `GET` list (bare array),
