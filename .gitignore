@@ -23,3 +23,6 @@ frontend/.vite/
 *.swp
 .idea/
 .vscode/
+
+# Externally-regenerated drop of the design handoff; canonical copy is docs/design/
+/design_handoff_sentinel_api_monitoring/
