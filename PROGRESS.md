@@ -143,3 +143,6 @@ first (see sentinel-architecture recipe step 1).
 - **Quick win (parked):** config export — monitor → curl / Postman collection
   (round-trips the importers); SPEC §8.
 - (from SPEC §8) OpenAPI/HAR import, public status pages, maintenance windows.
+- **Frontend design spec** committed at `docs/design/` (hi-fi handoff:
+  dashboard + add-monitor flows, design tokens, copy, client-side parser specs) —
+  source-of-truth for S11–S12.

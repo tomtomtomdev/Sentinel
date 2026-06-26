@@ -1,0 +1,713 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;450;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+*{box-sizing:border-box;}
+body{margin:0;}
+button{font-family:inherit;border:none;background:none;cursor:pointer;}
+input,textarea,select{font-family:inherit;outline:none;}
+input:focus,textarea:focus,select:focus{border-color:#a5b4fc !important;box-shadow:0 0 0 3px rgba(79,70,229,0.12) !important;}
+::selection{background:#e0e7ff;}
+@keyframes sntPulse{0%{box-shadow:0 0 0 0 rgba(34,197,94,0.5);}70%{box-shadow:0 0 0 5px rgba(34,197,94,0);}100%{box-shadow:0 0 0 0 rgba(34,197,94,0);}}
+@keyframes sntIn{from{opacity:0;transform:translateY(6px);}to{opacity:1;transform:translateY(0);}}
+@keyframes sntToast{0%{opacity:0;transform:translateY(10px);}12%{opacity:1;transform:translateY(0);}88%{opacity:1;transform:translateY(0);}100%{opacity:0;transform:translateY(10px);}}
+</style>
+</helmet>
+
+<div style="display:flex;height:100vh;width:100%;overflow:hidden;font-family:'Hanken Grotesk',-apple-system,sans-serif;color:#18181b;background:#ffffff;font-size:14px;-webkit-font-smoothing:antialiased;">
+
+  <!-- ====================== SIDEBAR ====================== -->
+  <aside style="width:240px;flex-shrink:0;background:#fafafa;border-right:1px solid #ededed;display:flex;flex-direction:column;padding:18px 14px;">
+    <div style="display:flex;align-items:center;gap:10px;padding:6px 8px 18px 8px;">
+      <div style="width:28px;height:28px;border-radius:8px;background:#18181b;display:flex;align-items:center;justify-content:center;flex-shrink:0;">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M9 12l2 2 4-4"/></svg>
+      </div>
+      <span style="font-size:15.5px;font-weight:700;letter-spacing:-0.02em;">Sentinel</span>
+    </div>
+
+    <div style="display:flex;flex-direction:column;gap:2px;">
+      <div onClick="{{ goDashboard }}" style="display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:8px;background:#ffffff;border:1px solid #ececec;box-shadow:0 1px 2px rgba(0,0,0,0.03);color:#18181b;font-weight:600;cursor:pointer;">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+        Monitors
+      </div>
+      <div style="display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:8px;color:#71717a;font-weight:500;cursor:pointer;" style-hover="background:#f2f2f3;color:#3f3f46;">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+        Incidents
+        <span style="margin-left:auto;font-size:11px;font-weight:600;background:#fee2e2;color:#b91c1c;padding:1px 7px;border-radius:20px;">1</span>
+      </div>
+      <div style="display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:8px;color:#71717a;font-weight:500;cursor:pointer;" style-hover="background:#f2f2f3;color:#3f3f46;">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
+        Alerts
+      </div>
+      <div style="display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:8px;color:#71717a;font-weight:500;cursor:pointer;" style-hover="background:#f2f2f3;color:#3f3f46;">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+        Status pages
+      </div>
+      <div style="display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:8px;color:#71717a;font-weight:500;cursor:pointer;" style-hover="background:#f2f2f3;color:#3f3f46;">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+        Settings
+      </div>
+    </div>
+
+    <div style="margin-top:auto;display:flex;align-items:center;gap:10px;padding:8px;border-top:1px solid #ededed;">
+      <div style="width:30px;height:30px;border-radius:8px;background:#4f46e5;color:#fff;display:flex;align-items:center;justify-content:center;font-weight:600;font-size:12px;flex-shrink:0;">AC</div>
+      <div style="line-height:1.25;overflow:hidden;">
+        <div style="font-weight:600;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">Acme Inc</div>
+        <div style="font-size:11.5px;color:#a1a1aa;">Pro · 8 monitors</div>
+      </div>
+    </div>
+  </aside>
+
+  <!-- ====================== MAIN ====================== -->
+  <main style="flex:1;overflow-y:auto;background:#ffffff;">
+
+    <!-- ============ DASHBOARD ============ -->
+    <sc-if value="{{ isDashboard }}" hint-placeholder-val="{{ true }}">
+    <div data-screen-label="Dashboard" style="max-width:1080px;margin:0 auto;padding:30px 36px 64px 36px;">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:4px;">
+        <div>
+          <h1 style="margin:0;font-size:24px;font-weight:700;letter-spacing:-0.02em;">Monitors</h1>
+          <div style="display:flex;align-items:center;gap:7px;margin-top:6px;color:#71717a;font-size:13px;">
+            <span style="width:7px;height:7px;border-radius:50%;background:#22c55e;animation:sntPulse 2.2s infinite;"></span>
+            Live · checking every 30s
+          </div>
+        </div>
+        <div style="display:flex;align-items:center;gap:10px;">
+          <div style="display:flex;align-items:center;gap:8px;background:#f4f4f5;border:1px solid #ececec;border-radius:9px;padding:8px 12px;width:240px;color:#a1a1aa;">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+            <input placeholder="Search monitors" style="border:none;background:none;font-size:13px;color:#18181b;width:100%;" />
+          </div>
+          <button onClick="{{ goAdd }}" style="display:flex;align-items:center;gap:7px;background:#18181b;color:#fff;font-size:13px;font-weight:600;padding:9px 14px;border-radius:9px;box-shadow:0 1px 2px rgba(0,0,0,0.12);" style-hover="background:#000;">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+            Add monitor
+          </button>
+        </div>
+      </div>
+
+      <!-- stat cards -->
+      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin:24px 0 22px 0;">
+        <div style="border:1px solid #ececec;border-radius:12px;padding:16px 18px;background:#fff;">
+          <div style="display:flex;align-items:center;gap:7px;color:#71717a;font-size:12.5px;font-weight:500;"><span style="width:8px;height:8px;border-radius:50%;background:#22c55e;"></span>Operational</div>
+          <div style="font-size:30px;font-weight:700;letter-spacing:-0.02em;margin-top:8px;">{{ countUp }}</div>
+        </div>
+        <div style="border:1px solid #ececec;border-radius:12px;padding:16px 18px;background:#fff;">
+          <div style="display:flex;align-items:center;gap:7px;color:#71717a;font-size:12.5px;font-weight:500;"><span style="width:8px;height:8px;border-radius:50%;background:#f59e0b;"></span>Degraded</div>
+          <div style="font-size:30px;font-weight:700;letter-spacing:-0.02em;margin-top:8px;">{{ countDegraded }}</div>
+        </div>
+        <div style="border:1px solid #ececec;border-radius:12px;padding:16px 18px;background:#fff;">
+          <div style="display:flex;align-items:center;gap:7px;color:#71717a;font-size:12.5px;font-weight:500;"><span style="width:8px;height:8px;border-radius:50%;background:#ef4444;"></span>Down</div>
+          <div style="font-size:30px;font-weight:700;letter-spacing:-0.02em;margin-top:8px;">{{ countDown }}</div>
+        </div>
+        <div style="border:1px solid #ececec;border-radius:12px;padding:16px 18px;background:#fff;">
+          <div style="display:flex;align-items:center;gap:7px;color:#71717a;font-size:12.5px;font-weight:500;"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#4f46e5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/></svg>Avg uptime · 24h</div>
+          <div style="font-size:30px;font-weight:700;letter-spacing:-0.02em;margin-top:8px;">{{ avgUptime }}</div>
+        </div>
+      </div>
+
+      <!-- monitors grid -->
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:14px;">
+        <sc-for list="{{ monitorsView }}" as="m" hint-placeholder-count="6">
+          <div style="border:1px solid #ececec;border-radius:14px;background:#fff;padding:16px 18px;cursor:pointer;animation:sntIn .35s ease both;transition:border-color .12s,box-shadow .12s;display:flex;flex-direction:column;" style-hover="border-color:#d4d4d8;box-shadow:0 4px 14px rgba(0,0,0,0.05);">
+            <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:10px;">
+              <div style="min-width:0;flex:1;">
+                <div style="display:flex;align-items:center;gap:9px;">
+                  <span style="width:8px;height:8px;border-radius:50%;flex-shrink:0;background:{{ m.statusDot }};"></span>
+                  <span style="font-weight:600;font-size:14.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;letter-spacing:-0.01em;">{{ m.name }}</span>
+                  <sc-if value="{{ m.isNew }}" hint-placeholder-val="{{ false }}"><span style="font-size:10px;font-weight:700;color:#4f46e5;background:#eef2ff;padding:1px 6px;border-radius:5px;letter-spacing:0.02em;flex-shrink:0;">NEW</span></sc-if>
+                </div>
+                <div style="display:flex;align-items:center;gap:8px;margin-top:8px;">
+                  <span style="font-family:'JetBrains Mono',monospace;font-size:10.5px;font-weight:600;padding:2px 6px;border-radius:5px;flex-shrink:0;color:{{ m.methodColor }};background:{{ m.methodBg }};">{{ m.method }}</span>
+                  <span style="font-family:'JetBrains Mono',monospace;font-size:12px;color:#a1a1aa;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">{{ m.url }}</span>
+                </div>
+              </div>
+              <span style="font-size:11px;font-weight:600;padding:3px 9px;border-radius:20px;white-space:nowrap;flex-shrink:0;color:{{ m.statusColor }};background:{{ m.statusBg }};">{{ m.statusLabel }}</span>
+            </div>
+
+            <div style="display:flex;align-items:flex-end;gap:2px;height:30px;margin-top:18px;">
+              <sc-for list="{{ m.bars }}" as="b" hint-placeholder-count="26">
+                <span style="flex:1;border-radius:1.5px;min-width:2px;height:{{ b.h }}px;background:{{ b.color }};"></span>
+              </sc-for>
+            </div>
+
+            <div style="display:flex;align-items:center;gap:22px;margin-top:14px;padding-top:14px;border-top:1px solid #f4f4f5;">
+              <div>
+                <div style="font-weight:700;font-size:15px;letter-spacing:-0.01em;color:{{ m.uptimeColor }};">{{ m.uptime }}</div>
+                <div style="font-size:11px;color:#a1a1aa;margin-top:2px;">Uptime · 24h</div>
+              </div>
+              <div>
+                <div style="font-weight:700;font-size:15px;letter-spacing:-0.01em;font-family:'JetBrains Mono',monospace;color:#3f3f46;">{{ m.latency }}</div>
+                <div style="font-size:11px;color:#a1a1aa;margin-top:2px;">Latency</div>
+              </div>
+              <div style="margin-left:auto;text-align:right;">
+                <div style="font-size:12px;color:#71717a;">{{ m.lastCheck }}</div>
+                <div style="font-size:11px;color:#a1a1aa;margin-top:2px;">Last check</div>
+              </div>
+            </div>
+          </div>
+        </sc-for>
+      </div>
+    </div>
+    </sc-if>
+
+    <!-- ============ ADD MONITOR ============ -->
+    <sc-if value="{{ isAdd }}" hint-placeholder-val="{{ false }}">
+    <div data-screen-label="Add monitor" style="max-width:740px;margin:0 auto;padding:30px 36px 80px 36px;">
+      <button onClick="{{ goDashboard }}" style="display:flex;align-items:center;gap:6px;color:#71717a;font-size:13px;font-weight:500;margin-bottom:18px;" style-hover="color:#18181b;">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
+        Back to monitors
+      </button>
+      <h1 style="margin:0;font-size:24px;font-weight:700;letter-spacing:-0.02em;">Add a monitor</h1>
+      <p style="margin:7px 0 22px 0;color:#71717a;font-size:14px;">Import an existing request or set one up by hand. Sentinel starts watching it immediately.</p>
+
+      <!-- segmented tabs -->
+      <div style="display:flex;gap:4px;background:#f4f4f5;border:1px solid #ececec;padding:4px;border-radius:11px;margin-bottom:24px;">
+        <button onClick="{{ setTabCurl }}" style="{{ curlTabStyle }}">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
+          Paste cURL
+        </button>
+        <button onClick="{{ setTabImport }}" style="{{ importTabStyle }}">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+          Import collection
+        </button>
+        <button onClick="{{ setTabManual }}" style="{{ manualTabStyle }}">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.12 2.12 0 0 1 3 3L12 15l-4 1 1-4z"/></svg>
+          Manual setup
+        </button>
+      </div>
+
+      <!-- ===== cURL panel ===== -->
+      <sc-if value="{{ tabCurl }}" hint-placeholder-val="{{ true }}">
+      <div>
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
+          <label style="font-size:13px;font-weight:600;">cURL command</label>
+          <button onClick="{{ useExample }}" style="font-size:12.5px;font-weight:600;color:#4f46e5;" style-hover="text-decoration:underline;">Use example</button>
+        </div>
+        <textarea onInput="{{ onCurlInput }}" value="{{ curlText }}" placeholder="curl -X POST https://api.acme.io/v1/auth/login -H 'Content-Type: application/json' -d '{&quot;email&quot;:&quot;a@b.com&quot;}'" style="width:100%;min-height:140px;resize:vertical;background:#fafafa;border:1px solid #e4e4e7;border-radius:11px;padding:14px 16px;font-family:'JetBrains Mono',monospace;font-size:12.5px;line-height:1.6;color:#18181b;"></textarea>
+        <button onClick="{{ doParseCurl }}" style="margin-top:12px;display:inline-flex;align-items:center;gap:7px;background:#fff;border:1px solid #d4d4d8;color:#18181b;font-size:13px;font-weight:600;padding:8px 14px;border-radius:9px;" style-hover="background:#fafafa;border-color:#a1a1aa;">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 2v6h-6"/><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M3 22v-6h6"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/></svg>
+          Parse request
+        </button>
+
+        <sc-if value="{{ hasParsed }}" hint-placeholder-val="{{ false }}">
+        <div style="margin-top:22px;border:1px solid #ececec;border-radius:12px;overflow:hidden;animation:sntIn .3s ease both;">
+          <div style="padding:10px 16px;background:#fafafa;border-bottom:1px solid #ededed;font-size:11.5px;font-weight:600;text-transform:uppercase;letter-spacing:0.04em;color:#a1a1aa;display:flex;align-items:center;gap:7px;">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#22c55e" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+            Detected request
+          </div>
+          <div style="padding:16px;">
+            <div style="display:flex;align-items:center;gap:9px;flex-wrap:wrap;">
+              <span style="font-family:'JetBrains Mono',monospace;font-size:11.5px;font-weight:600;padding:3px 8px;border-radius:6px;color:{{ parsedView.methodColor }};background:{{ parsedView.methodBg }};">{{ parsedView.method }}</span>
+              <span style="font-family:'JetBrains Mono',monospace;font-size:13px;color:#3f3f46;word-break:break-all;">{{ parsedView.url }}</span>
+            </div>
+            <sc-if value="{{ parsedView.hasHeaders }}" hint-placeholder-val="{{ false }}">
+            <div style="margin-top:14px;">
+              <div style="font-size:11.5px;font-weight:600;color:#a1a1aa;margin-bottom:6px;">HEADERS</div>
+              <sc-for list="{{ parsedView.headers }}" as="h" hint-placeholder-count="2">
+                <div style="display:flex;gap:8px;font-family:'JetBrains Mono',monospace;font-size:12px;padding:3px 0;">
+                  <span style="color:#7c3aed;">{{ h.k }}:</span><span style="color:#52525b;word-break:break-all;">{{ h.v }}</span>
+                </div>
+              </sc-for>
+            </div>
+            </sc-if>
+            <sc-if value="{{ parsedView.hasBody }}" hint-placeholder-val="{{ false }}">
+            <div style="margin-top:14px;">
+              <div style="font-size:11.5px;font-weight:600;color:#a1a1aa;margin-bottom:6px;">BODY</div>
+              <pre style="margin:0;background:#fafafa;border:1px solid #ededed;border-radius:8px;padding:10px 12px;font-family:'JetBrains Mono',monospace;font-size:12px;color:#52525b;overflow:auto;white-space:pre-wrap;word-break:break-all;">{{ parsedView.body }}</pre>
+            </div>
+            </sc-if>
+          </div>
+        </div>
+
+        <!-- monitoring rules -->
+        <div style="margin-top:22px;">
+          <h3 style="margin:0 0 14px 0;font-size:15px;font-weight:700;letter-spacing:-0.01em;">Monitoring rules</h3>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;">
+            <div>
+              <label style="font-size:12.5px;font-weight:600;color:#52525b;display:block;margin-bottom:6px;">Check interval</label>
+              <select onChange="{{ onRuleChange }}" data-rule="interval" value="{{ rules.interval }}" style="width:100%;padding:9px 11px;border:1px solid #e4e4e7;border-radius:9px;font-size:13px;background:#fff;color:#18181b;">
+                <option value="30s">Every 30 seconds</option>
+                <option value="1m">Every 1 minute</option>
+                <option value="5m">Every 5 minutes</option>
+                <option value="10m">Every 10 minutes</option>
+                <option value="30m">Every 30 minutes</option>
+              </select>
+            </div>
+            <div>
+              <label style="font-size:12.5px;font-weight:600;color:#52525b;display:block;margin-bottom:6px;">Expected status code</label>
+              <input onInput="{{ onRuleChange }}" data-rule="expectedStatus" value="{{ rules.expectedStatus }}" style="width:100%;padding:9px 11px;border:1px solid #e4e4e7;border-radius:9px;font-size:13px;font-family:'JetBrains Mono',monospace;background:#fff;" />
+            </div>
+          </div>
+          <div style="margin-top:16px;">
+            <label style="font-size:12.5px;font-weight:600;color:#52525b;display:block;margin-bottom:8px;">Response assertions</label>
+            <sc-for list="{{ assertionsView }}" as="a" hint-placeholder-count="1">
+              <div style="display:flex;gap:8px;margin-bottom:8px;align-items:center;">
+                <select onChange="{{ onAssertChange }}" data-idx="{{ a.idx }}" data-field="type" value="{{ a.type }}" style="width:200px;flex-shrink:0;padding:8px 10px;border:1px solid #e4e4e7;border-radius:9px;font-size:12.5px;background:#fff;color:#18181b;">
+                  <option value="Body contains">Body contains</option>
+                  <option value="JSON path equals">JSON path equals</option>
+                  <option value="Status code equals">Status code equals</option>
+                  <option value="Response time under (ms)">Response time under (ms)</option>
+                </select>
+                <input onInput="{{ onAssertChange }}" data-idx="{{ a.idx }}" data-field="value" value="{{ a.value }}" placeholder="Expected value" style="flex:1;padding:8px 11px;border:1px solid #e4e4e7;border-radius:9px;font-size:12.5px;font-family:'JetBrains Mono',monospace;" />
+                <button onClick="{{ removeAssert }}" data-idx="{{ a.idx }}" style="width:34px;height:34px;flex-shrink:0;display:flex;align-items:center;justify-content:center;border:1px solid #e4e4e7;border-radius:9px;color:#a1a1aa;" style-hover="background:#fef2f2;border-color:#fecaca;color:#ef4444;">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                </button>
+              </div>
+            </sc-for>
+            <button onClick="{{ addAssert }}" style="display:inline-flex;align-items:center;gap:6px;font-size:12.5px;font-weight:600;color:#4f46e5;padding:4px 0;" style-hover="text-decoration:underline;">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+              Add assertion
+            </button>
+          </div>
+        </div>
+
+        <div style="display:flex;justify-content:flex-end;gap:10px;margin-top:28px;padding-top:20px;border-top:1px solid #ededed;">
+          <button onClick="{{ goDashboard }}" style="padding:9px 16px;border:1px solid #d4d4d8;border-radius:9px;font-size:13px;font-weight:600;color:#3f3f46;background:#fff;" style-hover="background:#fafafa;">Cancel</button>
+          <button onClick="{{ createFromParsed }}" style="padding:9px 18px;border-radius:9px;font-size:13px;font-weight:600;color:#fff;background:#18181b;box-shadow:0 1px 2px rgba(0,0,0,0.12);" style-hover="background:#000;">Create monitor</button>
+        </div>
+        </sc-if>
+      </div>
+      </sc-if>
+
+      <!-- ===== Import panel ===== -->
+      <sc-if value="{{ tabImport }}" hint-placeholder-val="{{ false }}">
+      <div>
+        <div onClick="{{ openFile }}" onDragOver="{{ onDragOver }}" onDrop="{{ onDrop }}" style="border:1.5px dashed {{ dropBorder }};border-radius:13px;padding:36px 24px;text-align:center;cursor:pointer;background:{{ dropBg }};transition:all .12s;">
+          <div style="width:46px;height:46px;border-radius:12px;background:#eef2ff;display:flex;align-items:center;justify-content:center;margin:0 auto 14px auto;">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#4f46e5" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+          </div>
+          <div style="font-size:14px;font-weight:600;">Drop a Postman collection or JSON file</div>
+          <div style="font-size:13px;color:#a1a1aa;margin-top:5px;">or <span style="color:#4f46e5;font-weight:600;">browse your computer</span> · Postman, OpenAPI, generic JSON</div>
+          <input type="file" accept=".json,application/json" ref="{{ fileRef }}" onChange="{{ onFile }}" style="display:none;" />
+        </div>
+        <div style="text-align:center;margin-top:12px;">
+          <button onClick="{{ useSampleCollection }}" style="font-size:12.5px;font-weight:600;color:#4f46e5;" style-hover="text-decoration:underline;">Load an example collection instead</button>
+        </div>
+
+        <sc-if value="{{ hasImport }}" hint-placeholder-val="{{ false }}">
+        <div style="margin-top:22px;animation:sntIn .3s ease both;">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
+            <div style="display:flex;align-items:center;gap:8px;font-size:13px;font-weight:600;">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#22c55e" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+              {{ importSource }}
+            </div>
+            <button onClick="{{ toggleAllEndpoints }}" style="font-size:12.5px;font-weight:600;color:#4f46e5;" style-hover="text-decoration:underline;">{{ selectAllLabel }}</button>
+          </div>
+          <div style="border:1px solid #ececec;border-radius:12px;overflow:hidden;max-height:300px;overflow-y:auto;">
+            <sc-for list="{{ importView }}" as="e" hint-placeholder-count="5">
+              <label data-idx="{{ e.idx }}" style="display:flex;align-items:center;gap:11px;padding:11px 16px;border-bottom:1px solid #f4f4f5;cursor:pointer;" style-hover="background:#fafafa;">
+                <input type="checkbox" checked="{{ e.selected }}" onChange="{{ onToggleEndpoint }}" data-idx="{{ e.idx }}" style="width:16px;height:16px;accent-color:#4f46e5;cursor:pointer;" />
+                <span style="font-family:'JetBrains Mono',monospace;font-size:10.5px;font-weight:600;padding:2px 6px;border-radius:5px;flex-shrink:0;width:52px;text-align:center;color:{{ e.methodColor }};background:{{ e.methodBg }};">{{ e.method }}</span>
+                <span style="font-weight:600;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex-shrink:0;max-width:180px;">{{ e.name }}</span>
+                <span style="font-family:'JetBrains Mono',monospace;font-size:12px;color:#a1a1aa;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">{{ e.url }}</span>
+              </label>
+            </sc-for>
+          </div>
+
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:20px;">
+            <div>
+              <label style="font-size:12.5px;font-weight:600;color:#52525b;display:block;margin-bottom:6px;">Check interval (all)</label>
+              <select onChange="{{ onRuleChange }}" data-rule="interval" value="{{ rules.interval }}" style="width:100%;padding:9px 11px;border:1px solid #e4e4e7;border-radius:9px;font-size:13px;background:#fff;color:#18181b;">
+                <option value="30s">Every 30 seconds</option>
+                <option value="1m">Every 1 minute</option>
+                <option value="5m">Every 5 minutes</option>
+                <option value="10m">Every 10 minutes</option>
+              </select>
+            </div>
+            <div>
+              <label style="font-size:12.5px;font-weight:600;color:#52525b;display:block;margin-bottom:6px;">Expected status code</label>
+              <input onInput="{{ onRuleChange }}" data-rule="expectedStatus" value="{{ rules.expectedStatus }}" style="width:100%;padding:9px 11px;border:1px solid #e4e4e7;border-radius:9px;font-size:13px;font-family:'JetBrains Mono',monospace;background:#fff;" />
+            </div>
+          </div>
+
+          <div style="display:flex;justify-content:flex-end;gap:10px;margin-top:28px;padding-top:20px;border-top:1px solid #ededed;">
+            <button onClick="{{ goDashboard }}" style="padding:9px 16px;border:1px solid #d4d4d8;border-radius:9px;font-size:13px;font-weight:600;color:#3f3f46;background:#fff;" style-hover="background:#fafafa;">Cancel</button>
+            <button onClick="{{ createFromImport }}" style="padding:9px 18px;border-radius:9px;font-size:13px;font-weight:600;color:#fff;background:#18181b;box-shadow:0 1px 2px rgba(0,0,0,0.12);" style-hover="background:#000;">{{ importBtnLabel }}</button>
+          </div>
+        </div>
+        </sc-if>
+      </div>
+      </sc-if>
+
+      <!-- ===== Manual panel ===== -->
+      <sc-if value="{{ tabManual }}" hint-placeholder-val="{{ false }}">
+      <div>
+        <div style="margin-bottom:16px;">
+          <label style="font-size:12.5px;font-weight:600;color:#52525b;display:block;margin-bottom:6px;">Monitor name</label>
+          <input onInput="{{ onManualChange }}" data-field="name" value="{{ manual.name }}" placeholder="e.g. Checkout API" style="width:100%;padding:9px 12px;border:1px solid #e4e4e7;border-radius:9px;font-size:13.5px;background:#fff;" />
+        </div>
+        <div style="margin-bottom:16px;">
+          <label style="font-size:12.5px;font-weight:600;color:#52525b;display:block;margin-bottom:6px;">Endpoint</label>
+          <div style="display:flex;gap:8px;">
+            <select onChange="{{ onManualChange }}" data-field="method" value="{{ manual.method }}" style="width:110px;flex-shrink:0;padding:9px 11px;border:1px solid #e4e4e7;border-radius:9px;font-size:13px;font-family:'JetBrains Mono',monospace;font-weight:600;background:#fff;color:#18181b;">
+              <option value="GET">GET</option><option value="POST">POST</option><option value="PUT">PUT</option><option value="PATCH">PATCH</option><option value="DELETE">DELETE</option>
+            </select>
+            <input onInput="{{ onManualChange }}" data-field="url" value="{{ manual.url }}" placeholder="https://api.acme.io/v1/health" style="flex:1;padding:9px 12px;border:1px solid #e4e4e7;border-radius:9px;font-size:13px;font-family:'JetBrains Mono',monospace;background:#fff;" />
+          </div>
+        </div>
+
+        <div style="margin-bottom:16px;">
+          <label style="font-size:12.5px;font-weight:600;color:#52525b;display:block;margin-bottom:8px;">Headers</label>
+          <sc-for list="{{ manualHeadersView }}" as="h" hint-placeholder-count="2">
+            <div style="display:flex;gap:8px;margin-bottom:8px;">
+              <input onInput="{{ onHeaderChange }}" data-idx="{{ h.idx }}" data-field="k" value="{{ h.k }}" placeholder="Header" style="flex:1;padding:8px 11px;border:1px solid #e4e4e7;border-radius:9px;font-size:12.5px;font-family:'JetBrains Mono',monospace;" />
+              <input onInput="{{ onHeaderChange }}" data-idx="{{ h.idx }}" data-field="v" value="{{ h.v }}" placeholder="Value" style="flex:1.4;padding:8px 11px;border:1px solid #e4e4e7;border-radius:9px;font-size:12.5px;font-family:'JetBrains Mono',monospace;" />
+              <button onClick="{{ removeHeader }}" data-idx="{{ h.idx }}" style="width:34px;height:34px;flex-shrink:0;display:flex;align-items:center;justify-content:center;border:1px solid #e4e4e7;border-radius:9px;color:#a1a1aa;" style-hover="background:#fef2f2;border-color:#fecaca;color:#ef4444;">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+              </button>
+            </div>
+          </sc-for>
+          <button onClick="{{ addHeader }}" style="display:inline-flex;align-items:center;gap:6px;font-size:12.5px;font-weight:600;color:#4f46e5;padding:4px 0;" style-hover="text-decoration:underline;">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+            Add header
+          </button>
+        </div>
+
+        <div style="margin-top:22px;">
+          <h3 style="margin:0 0 14px 0;font-size:15px;font-weight:700;letter-spacing:-0.01em;">Monitoring rules</h3>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;">
+            <div>
+              <label style="font-size:12.5px;font-weight:600;color:#52525b;display:block;margin-bottom:6px;">Check interval</label>
+              <select onChange="{{ onRuleChange }}" data-rule="interval" value="{{ rules.interval }}" style="width:100%;padding:9px 11px;border:1px solid #e4e4e7;border-radius:9px;font-size:13px;background:#fff;color:#18181b;">
+                <option value="30s">Every 30 seconds</option>
+                <option value="1m">Every 1 minute</option>
+                <option value="5m">Every 5 minutes</option>
+                <option value="10m">Every 10 minutes</option>
+                <option value="30m">Every 30 minutes</option>
+              </select>
+            </div>
+            <div>
+              <label style="font-size:12.5px;font-weight:600;color:#52525b;display:block;margin-bottom:6px;">Expected status code</label>
+              <input onInput="{{ onRuleChange }}" data-rule="expectedStatus" value="{{ rules.expectedStatus }}" style="width:100%;padding:9px 11px;border:1px solid #e4e4e7;border-radius:9px;font-size:13px;font-family:'JetBrains Mono',monospace;background:#fff;" />
+            </div>
+          </div>
+          <div style="margin-top:16px;">
+            <label style="font-size:12.5px;font-weight:600;color:#52525b;display:block;margin-bottom:8px;">Response assertions</label>
+            <sc-for list="{{ assertionsView }}" as="a" hint-placeholder-count="1">
+              <div style="display:flex;gap:8px;margin-bottom:8px;align-items:center;">
+                <select onChange="{{ onAssertChange }}" data-idx="{{ a.idx }}" data-field="type" value="{{ a.type }}" style="width:200px;flex-shrink:0;padding:8px 10px;border:1px solid #e4e4e7;border-radius:9px;font-size:12.5px;background:#fff;color:#18181b;">
+                  <option value="Body contains">Body contains</option>
+                  <option value="JSON path equals">JSON path equals</option>
+                  <option value="Status code equals">Status code equals</option>
+                  <option value="Response time under (ms)">Response time under (ms)</option>
+                </select>
+                <input onInput="{{ onAssertChange }}" data-idx="{{ a.idx }}" data-field="value" value="{{ a.value }}" placeholder="Expected value" style="flex:1;padding:8px 11px;border:1px solid #e4e4e7;border-radius:9px;font-size:12.5px;font-family:'JetBrains Mono',monospace;" />
+                <button onClick="{{ removeAssert }}" data-idx="{{ a.idx }}" style="width:34px;height:34px;flex-shrink:0;display:flex;align-items:center;justify-content:center;border:1px solid #e4e4e7;border-radius:9px;color:#a1a1aa;" style-hover="background:#fef2f2;border-color:#fecaca;color:#ef4444;">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                </button>
+              </div>
+            </sc-for>
+            <button onClick="{{ addAssert }}" style="display:inline-flex;align-items:center;gap:6px;font-size:12.5px;font-weight:600;color:#4f46e5;padding:4px 0;" style-hover="text-decoration:underline;">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+              Add assertion
+            </button>
+          </div>
+        </div>
+
+        <div style="display:flex;justify-content:flex-end;gap:10px;margin-top:28px;padding-top:20px;border-top:1px solid #ededed;">
+          <button onClick="{{ goDashboard }}" style="padding:9px 16px;border:1px solid #d4d4d8;border-radius:9px;font-size:13px;font-weight:600;color:#3f3f46;background:#fff;" style-hover="background:#fafafa;">Cancel</button>
+          <button onClick="{{ createFromManual }}" style="padding:9px 18px;border-radius:9px;font-size:13px;font-weight:600;color:#fff;background:#18181b;box-shadow:0 1px 2px rgba(0,0,0,0.12);" style-hover="background:#000;">Create monitor</button>
+        </div>
+      </div>
+      </sc-if>
+
+    </div>
+    </sc-if>
+
+  </main>
+
+  <!-- toast -->
+  <sc-if value="{{ showToast }}" hint-placeholder-val="{{ false }}">
+  <div style="position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:#18181b;color:#fff;padding:11px 18px;border-radius:11px;font-size:13px;font-weight:500;display:flex;align-items:center;gap:9px;box-shadow:0 8px 24px rgba(0,0,0,0.18);animation:sntToast 3s ease forwards;z-index:50;">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#4ade80" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+    {{ toastMsg }}
+  </div>
+  </sc-if>
+
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script>
+class Component extends DCLogic {
+  fileRef = React.createRef();
+
+  genBars(status){
+    const bars=[];
+    for(let i=0;i<26;i++){
+      const r=Math.random();
+      let color='#22c55e';
+      if(status==='down'){ color = i>=20 ? '#ef4444' : (r<0.12?'#f59e0b':'#22c55e'); }
+      else if(status==='degraded'){ color = r<0.20?'#f59e0b':(r<0.05?'#ef4444':'#22c55e'); }
+      else { color = r<0.04?'#f59e0b':'#22c55e'; }
+      let h = 6 + Math.round(Math.random()*10);
+      if(color==='#ef4444') h = 4;
+      if(color==='#f59e0b') h = Math.max(h, 13);
+      bars.push({h:h, color:color});
+    }
+    return bars;
+  }
+
+  state = (() => {
+    const seed = [
+      {name:'Stripe Checkout', method:'POST', url:'https://api.stripe.com/v1/checkout/sessions', status:'up', uptime:99.99, latency:142, lastCheck:'8s ago'},
+      {name:'Auth — Login', method:'POST', url:'https://api.acme.io/v1/auth/login', status:'up', uptime:99.97, latency:96, lastCheck:'11s ago'},
+      {name:'User Profile', method:'GET', url:'https://api.acme.io/v1/users/me', status:'up', uptime:100, latency:54, lastCheck:'5s ago'},
+      {name:'Search Index', method:'GET', url:'https://api.acme.io/v1/search', status:'degraded', uptime:98.42, latency:812, lastCheck:'9s ago'},
+      {name:'Payments Webhook', method:'POST', url:'https://hooks.acme.io/payments', status:'up', uptime:99.91, latency:210, lastCheck:'14s ago'},
+      {name:'Inventory Sync', method:'PUT', url:'https://api.acme.io/v1/inventory/sync', status:'down', uptime:91.20, latency:0, lastCheck:'2m ago'},
+      {name:'Email Service', method:'GET', url:'https://api.acme.io/v1/health', status:'up', uptime:99.95, latency:73, lastCheck:'6s ago'},
+      {name:'CDN Assets', method:'GET', url:'https://cdn.acme.io/status', status:'up', uptime:100, latency:38, lastCheck:'3s ago'},
+    ];
+    return {
+      view:'dashboard',
+      addTab:'curl',
+      curlText:'',
+      parsed:null,
+      importEndpoints:[],
+      importSource:'',
+      dragging:false,
+      manual:{ name:'', method:'GET', url:'', headers:[{k:'',v:''}], body:'' },
+      rules:{ interval:'1m', expectedStatus:'200', assertions:[{type:'Status code equals', value:'200'}] },
+      monitors: seed.map((m,i)=>({ ...m, id:'seed-'+i, bars:this.genBars(m.status), isNew:false })),
+      newIds:[],
+      toastMsg:'',
+      showToast:false,
+    };
+  })();
+
+  // ---------- helpers ----------
+  methodStyle(method){
+    const m=(method||'GET').toUpperCase();
+    const map={
+      GET:{color:'#15803d',bg:'#dcfce7'},
+      POST:{color:'#1d4ed8',bg:'#dbeafe'},
+      PUT:{color:'#b45309',bg:'#fef3c7'},
+      PATCH:{color:'#6d28d9',bg:'#ede9fe'},
+      DELETE:{color:'#b91c1c',bg:'#fee2e2'},
+    };
+    return map[m]||{color:'#52525b',bg:'#f4f4f5'};
+  }
+  statusStyle(s){
+    const map={
+      up:{dot:'#22c55e',label:'Operational',color:'#15803d',uptime:'#15803d',bg:'#f0fdf4'},
+      degraded:{dot:'#f59e0b',label:'Degraded',color:'#b45309',uptime:'#b45309',bg:'#fffbeb'},
+      down:{dot:'#ef4444',label:'Down',color:'#b91c1c',uptime:'#b91c1c',bg:'#fef2f2'},
+    };
+    return map[s]||map.up;
+  }
+  cleanUrl(u){ return (u||'').replace(/^https?:\/\//,''); }
+  fmtUptime(u){ return u>=100?'100%':(Math.round(u*100)/100).toFixed(2)+'%'; }
+  fmtLatency(l){ return l>0? l+'ms':'—'; }
+  rnd(a,b){ return Math.round(a+Math.random()*(b-a)); }
+  deriveName(url){
+    try{ const u=new URL(url.startsWith('http')?url:'https://'+url); const parts=u.pathname.split('/').filter(Boolean); return parts.slice(-2).join('/')||u.hostname; }
+    catch(e){ return this.cleanUrl(url); }
+  }
+  toast(msg){
+    this.setState({showToast:false},()=>{
+      this.setState({toastMsg:msg, showToast:true});
+      clearTimeout(this._tt);
+      this._tt=setTimeout(()=>this.setState({showToast:false}),3000);
+    });
+  }
+
+  // ---------- nav ----------
+  goDashboard=()=>this.setState({view:'dashboard'});
+  goAdd=()=>this.setState({view:'add'});
+  setTabCurl=()=>this.setState({addTab:'curl'});
+  setTabImport=()=>this.setState({addTab:'import'});
+  setTabManual=()=>this.setState({addTab:'manual'});
+
+  // ---------- cURL ----------
+  onCurlInput=(e)=>this.setState({curlText:e.target.value});
+  useExample=()=>this.setState({curlText:"curl -X POST https://api.acme.io/v1/auth/login \\\n  -H 'Content-Type: application/json' \\\n  -H 'Authorization: Bearer sk_live_4f9a2b' \\\n  -d '{\"email\":\"ada@acme.io\",\"password\":\"••••••\"}'"});
+  parseCurl(text){
+    const t=(text||'').trim().replace(/\\\s*\n/g,' ').replace(/\n/g,' ');
+    if(!t) return null;
+    const tokens=[]; const re=/"([^"]*)"|'([^']*)'|(\S+)/g; let mm;
+    while((mm=re.exec(t))){ tokens.push(mm[1]!==undefined?mm[1]:(mm[2]!==undefined?mm[2]:mm[3])); }
+    let method=null,url=null,body=null; const headers=[];
+    for(let i=0;i<tokens.length;i++){
+      const tk=tokens[i];
+      if(tk==='curl') continue;
+      if(tk==='-X'||tk==='--request'){ method=tokens[++i]; continue; }
+      if(tk==='-H'||tk==='--header'){ const h=tokens[++i]||''; const idx=h.indexOf(':'); if(idx>0) headers.push({k:h.slice(0,idx).trim(), v:h.slice(idx+1).trim()}); continue; }
+      if(tk==='-d'||tk==='--data'||tk==='--data-raw'||tk==='--data-binary'||tk==='--data-urlencode'){ body=tokens[++i]; continue; }
+      if(tk==='--url'){ url=tokens[++i]; continue; }
+      if(tk==='-u'||tk==='--user'||tk==='-A'||tk==='--user-agent'||tk==='-e'||tk==='--referer'){ i++; continue; }
+      if(tk.charAt(0)==='-') continue;
+      if(!url && (/^https?:\/\//.test(tk) || tk.includes('.'))) url=tk;
+    }
+    if(!method) method = body? 'POST':'GET';
+    if(!url) return null;
+    return { method:method.toUpperCase(), url, headers, body };
+  }
+  doParseCurl=()=>{
+    const p=this.parseCurl(this.state.curlText);
+    if(!p){ this.toast('Could not detect a request — check the cURL'); return; }
+    this.setState({parsed:p});
+  };
+  createFromParsed=()=>{
+    const p=this.state.parsed; if(!p) return;
+    this.addMonitors([{ name:this.deriveName(p.url), method:p.method, url:p.url }]);
+    this.setState({parsed:null, curlText:''});
+  };
+
+  // ---------- import ----------
+  openFile=()=>{ if(this.fileRef.current) this.fileRef.current.click(); };
+  onDragOver=(e)=>{ e.preventDefault(); if(!this.state.dragging) this.setState({dragging:true}); };
+  onFile=(e)=>{ const f=e.target.files&&e.target.files[0]; if(f) this.readFile(f); };
+  onDrop=(e)=>{ e.preventDefault(); this.setState({dragging:false}); const f=e.dataTransfer.files&&e.dataTransfer.files[0]; if(f) this.readFile(f); };
+  readFile(file){ const fr=new FileReader(); fr.onload=()=>this.ingestJson(fr.result, file.name); fr.readAsText(file); }
+  ingestJson(text,name){
+    let j; try{ j=JSON.parse(text); }catch(e){ this.toast('That file is not valid JSON'); return; }
+    let res=null;
+    if(j && j.info && j.item) res=this.parsePostman(j);
+    else if(j && j.paths) res=this.parseOpenApi(j);
+    else if(Array.isArray(j)) res={ source:'JSON · '+name, eps:j.map(x=>({selected:true, name:x.name||this.deriveName(x.url||''), method:(x.method||'GET').toUpperCase(), url:x.url||''})).filter(x=>x.url) };
+    else if(j && Array.isArray(j.endpoints)) res={ source:'JSON · '+name, eps:j.endpoints.map(x=>({selected:true, name:x.name||this.deriveName(x.url||''), method:(x.method||'GET').toUpperCase(), url:x.url||''})).filter(x=>x.url) };
+    if(!res || !res.eps.length){ this.toast('No endpoints found in that file'); return; }
+    this.setState({ importSource:res.source+' · '+res.eps.length+' requests', importEndpoints:res.eps });
+  }
+  parsePostman(j){
+    const eps=[];
+    const walk=(items)=>{ (items||[]).forEach(it=>{ if(it.item) walk(it.item); else if(it.request){ const r=it.request; let url=''; if(typeof r.url==='string') url=r.url; else if(r.url&&r.url.raw) url=r.url.raw; eps.push({selected:true, name:it.name||this.deriveName(url), method:(r.method||'GET').toUpperCase(), url}); } }); };
+    walk(j.item);
+    return { source:'Postman · '+((j.info&&j.info.name)||'Collection'), eps };
+  }
+  parseOpenApi(j){
+    const eps=[]; const paths=j.paths||{}; const base=(j.servers&&j.servers[0]&&j.servers[0].url)||'';
+    Object.keys(paths).forEach(p=>{ Object.keys(paths[p]).forEach(m=>{ if(['get','post','put','patch','delete'].includes(m)){ const op=paths[p][m]||{}; eps.push({selected:true, name:op.summary||op.operationId||p, method:m.toUpperCase(), url:base+p}); } }); });
+    return { source:'OpenAPI · '+((j.info&&j.info.title)||'API'), eps };
+  }
+  useSampleCollection=()=>{
+    const sample={ info:{name:'Acme API'}, item:[
+      {name:'Health check', request:{method:'GET', url:{raw:'https://api.acme.io/v1/health'}}},
+      {name:'List orders', request:{method:'GET', url:{raw:'https://api.acme.io/v1/orders'}}},
+      {name:'Create order', request:{method:'POST', url:{raw:'https://api.acme.io/v1/orders'}}},
+      {name:'Get customer', request:{method:'GET', url:{raw:'https://api.acme.io/v1/customers/{id}'}}},
+      {name:'Update inventory', request:{method:'PUT', url:{raw:'https://api.acme.io/v1/inventory'}}},
+      {name:'Delete session', request:{method:'DELETE', url:{raw:'https://api.acme.io/v1/sessions/{id}'}}},
+    ]};
+    this.ingestJson(JSON.stringify(sample),'acme-api.postman.json');
+  };
+  onToggleEndpoint=(e)=>{ const i=parseInt(e.currentTarget.dataset.idx,10); const eps=this.state.importEndpoints.slice(); eps[i]={...eps[i], selected:!eps[i].selected}; this.setState({importEndpoints:eps}); };
+  toggleAllEndpoints=()=>{ const all=this.state.importEndpoints.every(e=>e.selected); this.setState({importEndpoints:this.state.importEndpoints.map(e=>({...e, selected:!all}))}); };
+  createFromImport=()=>{
+    const sel=this.state.importEndpoints.filter(e=>e.selected);
+    if(!sel.length){ this.toast('Select at least one endpoint'); return; }
+    this.addMonitors(sel.map(e=>({ name:e.name||this.deriveName(e.url), method:e.method, url:e.url })));
+    this.setState({importEndpoints:[], importSource:''});
+  };
+
+  // ---------- manual ----------
+  onManualChange=(e)=>{ const f=e.currentTarget.dataset.field; this.setState({manual:{...this.state.manual, [f]:e.target.value}}); };
+  onHeaderChange=(e)=>{ const i=parseInt(e.currentTarget.dataset.idx,10); const f=e.currentTarget.dataset.field; const hs=this.state.manual.headers.slice(); hs[i]={...hs[i], [f]:e.target.value}; this.setState({manual:{...this.state.manual, headers:hs}}); };
+  addHeader=()=>this.setState({manual:{...this.state.manual, headers:[...this.state.manual.headers, {k:'',v:''}]}});
+  removeHeader=(e)=>{ const i=parseInt(e.currentTarget.dataset.idx,10); const hs=this.state.manual.headers.slice(); hs.splice(i,1); this.setState({manual:{...this.state.manual, headers:hs.length?hs:[{k:'',v:''}]}}); };
+  createFromManual=()=>{
+    const m=this.state.manual;
+    if(!m.url.trim()){ this.toast('Enter an endpoint URL'); return; }
+    this.addMonitors([{ name:m.name.trim()||this.deriveName(m.url), method:m.method, url:m.url }]);
+    this.setState({manual:{ name:'', method:'GET', url:'', headers:[{k:'',v:''}], body:'' }});
+  };
+
+  // ---------- rules ----------
+  onRuleChange=(e)=>{ const f=e.currentTarget.dataset.rule; this.setState({rules:{...this.state.rules, [f]:e.target.value}}); };
+  onAssertChange=(e)=>{ const i=parseInt(e.currentTarget.dataset.idx,10); const f=e.currentTarget.dataset.field; const as=this.state.rules.assertions.slice(); as[i]={...as[i], [f]:e.target.value}; this.setState({rules:{...this.state.rules, assertions:as}}); };
+  addAssert=()=>this.setState({rules:{...this.state.rules, assertions:[...this.state.rules.assertions, {type:'Body contains', value:''}]}});
+  removeAssert=(e)=>{ const i=parseInt(e.currentTarget.dataset.idx,10); const as=this.state.rules.assertions.slice(); as.splice(i,1); this.setState({rules:{...this.state.rules, assertions:as}}); };
+
+  // ---------- create ----------
+  addMonitors(list){
+    const ts=Date.now();
+    const created=list.map((x,i)=>({
+      id:'new-'+ts+'-'+i,
+      name:x.name,
+      method:(x.method||'GET').toUpperCase(),
+      url:x.url,
+      status:'up',
+      uptime:100,
+      latency:this.rnd(40,220),
+      lastCheck:'just now',
+      bars:this.genBars('up'),
+      isNew:true,
+    }));
+    const ids=created.map(c=>c.id);
+    this.setState({ monitors:[...created, ...this.state.monitors.map(m=>({...m, isNew:false}))], view:'dashboard', newIds:ids });
+    this.toast(created.length===1?'Monitor created — now watching':created.length+' monitors created — now watching');
+    clearTimeout(this._nt);
+    this._nt=setTimeout(()=>{ this.setState({ monitors:this.state.monitors.map(m=>({...m, isNew:false})), newIds:[] }); }, 6000);
+  }
+
+  // ---------- render ----------
+  renderVals(){
+    const s=this.state;
+    const monitorsView=s.monitors.map(m=>{
+      const ms=this.methodStyle(m.method), ss=this.statusStyle(m.status);
+      return { id:m.id, name:m.name, method:m.method, methodColor:ms.color, methodBg:ms.bg,
+        url:this.cleanUrl(m.url), statusDot:ss.dot, statusLabel:ss.label, statusColor:ss.color, statusBg:ss.bg,
+        uptime:this.fmtUptime(m.uptime), uptimeColor:ss.uptime, latency:this.fmtLatency(m.latency),
+        lastCheck:m.lastCheck, bars:m.bars, isNew:m.isNew };
+    });
+    const countUp=s.monitors.filter(m=>m.status==='up').length;
+    const countDegraded=s.monitors.filter(m=>m.status==='degraded').length;
+    const countDown=s.monitors.filter(m=>m.status==='down').length;
+    const avg=s.monitors.reduce((a,m)=>a+m.uptime,0)/(s.monitors.length||1);
+
+    const tabBase={ flex:'1', display:'flex', alignItems:'center', justifyContent:'center', gap:'7px', padding:'9px 12px', fontSize:'13px', fontWeight:600, borderRadius:'8px', border:'1px solid transparent', transition:'all .12s' };
+    const tabActive={ ...tabBase, background:'#fff', color:'#18181b', border:'1px solid #e7e7ea', boxShadow:'0 1px 2px rgba(0,0,0,0.05)' };
+    const tabIdle={ ...tabBase, background:'transparent', color:'#71717a' };
+
+    let parsedView=null;
+    if(s.parsed){ const ps=this.methodStyle(s.parsed.method);
+      parsedView={ method:s.parsed.method, methodColor:ps.color, methodBg:ps.bg, url:s.parsed.url,
+        headers:s.parsed.headers, hasHeaders:s.parsed.headers.length>0,
+        body:s.parsed.body||'', hasBody:!!(s.parsed.body&&s.parsed.body.length) };
+    }
+
+    const importView=s.importEndpoints.map((e,i)=>{ const ms=this.methodStyle(e.method);
+      return { idx:i, selected:e.selected, method:e.method, methodColor:ms.color, methodBg:ms.bg, name:e.name, url:this.cleanUrl(e.url) }; });
+    const selCount=s.importEndpoints.filter(e=>e.selected).length;
+    const allSel=s.importEndpoints.length>0 && s.importEndpoints.every(e=>e.selected);
+
+    const assertionsView=s.rules.assertions.map((a,i)=>({ idx:i, type:a.type, value:a.value }));
+    const manualHeadersView=s.manual.headers.map((h,i)=>({ idx:i, k:h.k, v:h.v }));
+
+    return {
+      isDashboard:s.view==='dashboard',
+      isAdd:s.view==='add',
+      tabCurl:s.addTab==='curl', tabImport:s.addTab==='import', tabManual:s.addTab==='manual',
+      curlTabStyle:s.addTab==='curl'?tabActive:tabIdle,
+      importTabStyle:s.addTab==='import'?tabActive:tabIdle,
+      manualTabStyle:s.addTab==='manual'?tabActive:tabIdle,
+      monitorsView, countUp, countDegraded, countDown, avgUptime:this.fmtUptime(avg),
+      curlText:s.curlText, hasParsed:!!s.parsed, parsedView:parsedView||{headers:[]},
+      hasImport:s.importEndpoints.length>0, importSource:s.importSource, importView,
+      selectAllLabel:allSel?'Deselect all':'Select all',
+      importBtnLabel:'Create '+selCount+' monitor'+(selCount===1?'':'s'),
+      dropBorder:s.dragging?'#4f46e5':'#d4d4d8', dropBg:s.dragging?'#f5f3ff':'#fafafa',
+      rules:s.rules, assertionsView,
+      manual:s.manual, manualHeadersView,
+      showToast:s.showToast, toastMsg:s.toastMsg,
+      goDashboard:this.goDashboard, goAdd:this.goAdd,
+      setTabCurl:this.setTabCurl, setTabImport:this.setTabImport, setTabManual:this.setTabManual,
+      onCurlInput:this.onCurlInput, useExample:this.useExample, doParseCurl:this.doParseCurl, createFromParsed:this.createFromParsed,
+      openFile:this.openFile, onFile:this.onFile, onDrop:this.onDrop, onDragOver:this.onDragOver, fileRef:this.fileRef,
+      useSampleCollection:this.useSampleCollection, onToggleEndpoint:this.onToggleEndpoint, toggleAllEndpoints:this.toggleAllEndpoints, createFromImport:this.createFromImport,
+      onManualChange:this.onManualChange, onHeaderChange:this.onHeaderChange, addHeader:this.addHeader, removeHeader:this.removeHeader, createFromManual:this.createFromManual,
+      onRuleChange:this.onRuleChange, onAssertChange:this.onAssertChange, addAssert:this.addAssert, removeAssert:this.removeAssert,
+    };
+  }
+}
+</script>
+</body>
+</html>

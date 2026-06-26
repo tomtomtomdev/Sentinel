@@ -229,7 +229,8 @@ don't batch.
 - **S11 — Frontend scaffold.** Vite SPA, API client (sends the auth token),
   dashboard list with status + 24h uptime, monitor detail shell, create form,
   import UI, auth-source manage UI (create/edit/refresh, link a monitor to a
-  source). Component tests.
+  source). Component tests. **Design source-of-truth:** `docs/design/`
+  (hi-fi handoff — dashboard + add-monitor screens, tokens, copy, parser specs).
 - **S12 — Frontend charts + live.** Latency chart (Recharts), recent runs table,
   live status via `EventSource`. Component tests.
 - **S13 — Containerize & deploy.** Multi-stage Dockerfiles, `docker-compose.yml`
