@@ -315,6 +315,25 @@ stable (after S7), against a mock server if needed.
   fresh clone without a DB while CI (a `postgres:16` service) runs it for real.
   CI also runs `alembic upgrade head` to prove migrations apply.
 
+- **D12 — DTOs validate shape; the domain entity owns semantic bounds.** Pydantic
+  request DTOs (`interface/api/schemas.py`) enforce only types/shape; numeric and
+  business invariants (interval ≥30, timeout 1–60, thresholds ≥1, non-blank) live
+  solely on the `Monitor` entity. Building the entity from a DTO is what enforces
+  them, raising a domain `ValidationError`. Both a Pydantic `RequestValidationError`
+  and a domain `ValidationError` map to the **same** SPEC §5 envelope with code
+  `validation_error` (422); `NotFoundError` → `not_found` (404). One handler set,
+  registered on the app — no per-router duplication. Avoids two competing sources
+  of truth for the rules.
+- **D13 — The API is tested via the in-memory repo injected through
+  `dependency_overrides`.** `interface/api/deps.py` is the composition root; the
+  real `SqlMonitorRepository` is built lazily (`lru_cache` session factory) so
+  importing the app never opens a DB connection. API tests override
+  `get_monitor_service` with a fake-backed `MonitorService`, keeping the suite
+  DB-free and fast; the Postgres repository contract is proven separately (S1, D11).
+  Conventions: list returns a bare JSON array of monitors; `DELETE` returns `204`;
+  redaction is applied once in `MonitorResponse.from_entity` (the serialization
+  boundary), never in routers.
+
 _Append new decisions here as `Dn — <decision>: <why>` when slices force a choice._
 
 ---

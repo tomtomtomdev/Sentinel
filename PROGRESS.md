@@ -20,23 +20,22 @@
 
 ## Current state
 
-- **Phase:** S1 complete — `Monitor` entity + repository + first migration.
-- **Last green commit:** S1 (see detailed log below).
-- **Test suite:** 25 tests. `just test` (no DB) → 19 passed, 6 skipped (PG params).
-  With `TEST_DATABASE_URL` set → 25 passed (real Postgres contract).
-- **Schema/migrations:** Alembic initialised (async); `6518c1e8…` creates
-  `monitors`. `alembic upgrade head` applies cleanly on a fresh DB.
+- **Phase:** S2 complete — Monitor CRUD API (redaction + SPEC §5 error envelope).
+- **Last green commit:** S2 (see detailed log below).
+- **Test suite:** 49 tests. `just test` (no DB) → 43 passed, 6 skipped (PG params).
+  With `TEST_DATABASE_URL` set → 49 passed (real Postgres contract).
+- **Schema/migrations:** unchanged from S1 — CRUD uses the existing `monitors`
+  table; no new migration. Alembic `6518c1e8…` still head.
 - **Deployed:** no.
 
 ## Next action
 
-➡️ **Begin S2 — Monitor CRUD API** (`PLAN.md §5`). Routers + Pydantic DTO
-schemas + validation for create/list/get/patch/delete, mapping domain errors to
-the SPEC §5 envelope, and **header redaction at the serialization boundary**.
-This slice introduces the `application/` create use case that stamps timestamps
-via a real `Clock` (per D10) and `interface/api/deps.py` wiring. Test via
-`httpx.ASGITransport`; assert redaction. Read **sentinel-architecture** +
-**sentinel-security** first.
+➡️ **Begin S3 — curl import** (`PLAN.md §5`). Pure `parse_curl(command) ->
+MonitorDraft` in `domain/logic/` (table-driven unit tests over many curl shapes:
+`-X`, `-H`, `-d`/`--data*`, `--url`/bare URL, `-u`, `--compressed`, `-L`; unknown
+flags → per-draft warning), then `POST /api/v1/imports/curl` returning unsaved
+drafts (`{"drafts": [...]}`, never persisted). Treat the curl string as untrusted
+data. Read **sentinel-architecture** first. (`MonitorDraft` value object is new.)
 
 ---
 
@@ -44,7 +43,7 @@ via a real `Clock` (per D10) and `interface/api/deps.py` wiring. Test via
 
 - [x] **S0** Scaffold & green harness
 - [x] **S1** Monitor entity + repository (+ Alembic init)
-- [ ] **S2** Monitor CRUD API (+ header redaction)
+- [x] **S2** Monitor CRUD API (+ header redaction)
 - [ ] **S3** curl import
 - [ ] **S4** Postman import
 - [ ] **S5** Probe + assertions engine
@@ -78,6 +77,45 @@ via a real `Clock` (per D10) and `interface/api/deps.py` wiring. Test via
 > Commit(s): <conventional commit subject lines>
 > Resume hint: <the very next concrete step>
 > ```
+
+### S2 — Monitor CRUD API (+ header redaction)  · 2026-06-26
+Done: Full CRUD over `/api/v1/monitors` — `POST` (201), `GET` list (bare array),
+`GET /{id}`, `PATCH /{id}` (partial, re-validated), `DELETE /{id}` (204). Secret
+header values are redacted in every response at the serialization boundary
+(`Authorization: "Bearer ••••"`, `X-Api-Key: "••••"`), while the full value is
+still stored. Domain `ValidationError` → 422 and `NotFoundError` → 404, plus
+FastAPI request-validation → 422, all rendered as the SPEC §5 envelope
+(`{"error": {"code","message","details?}}`). New `application/MonitorService`
+orchestrates the `MonitorRepository`; `interface/api/deps.py` is the composition
+root (lazy `lru_cache` session factory + real `SystemClock`), so importing the
+app opens no DB connection.
+Tests: `tests/unit/domain/test_redaction.py` (11 — scheme-preserving mask, name
+set + `*token*/*secret*/*key*` heuristic, case-insensitive, non-mutating);
+`tests/integration/test_monitor_api.py` (13 — create/redaction/persistence,
+422 on bad bounds + malformed type, list/get/404, patch/422/404, delete/404)
+via `httpx.ASGITransport` with the in-memory repo injected through
+`dependency_overrides`. Suite: 43 passed / 6 skipped without a DB; 49 with PG.
+mypy strict + ruff clean.
+Decisions: **D12** (DTOs validate shape; the `Monitor` entity owns semantic
+bounds; both validation failures map to one `validation_error` envelope) and
+**D13** (API tested via fake repo through `dependency_overrides`; lazy DB wiring;
+list = bare array, DELETE = 204, redaction only in `MonitorResponse.from_entity`)
+added to PLAN §7. Implements the D5 principle (redaction at one boundary).
+Files: `src/sentinel/domain/logic/{__init__,redaction}.py`,
+`src/sentinel/domain/errors.py` (+`NotFoundError`),
+`src/sentinel/application/{__init__,monitor_service}.py`,
+`src/sentinel/infrastructure/clock.py` (`SystemClock`),
+`src/sentinel/interface/api/{schemas,errors,deps,monitors}.py`,
+`src/sentinel/interface/main.py` (wire router + handlers),
+`tests/unit/domain/test_redaction.py`, `tests/integration/test_monitor_api.py`.
+Follow-ups / parked: monitor `auth.secret` / header secrets still stored
+**plaintext** until S5a (`SecretBox`). `auth.secret_ref` is serialized as-is (a
+reference, not a secret value). No API auth gate yet (S9a). List has no
+pagination/`?include=summary` yet (S7). SSRF guard on monitor URLs is S10.
+Commit(s): `feat(api): Monitor CRUD endpoints with header redaction + error envelope (S2)`.
+Resume hint: start S3 — write failing table-driven unit tests for
+`parse_curl(command) -> MonitorDraft` (define the `MonitorDraft` value object)
+before the `POST /api/v1/imports/curl` endpoint.
 
 ### S1 — Monitor entity + repository  · 2026-06-26
 Done: `Monitor` domain entity with SPEC §4 invariants (interval ≥30, timeout

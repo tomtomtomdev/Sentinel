@@ -5,3 +5,7 @@ class DomainError(Exception):
 
 class ValidationError(DomainError):
     """An entity or value object violated one of its invariants."""
+
+
+class NotFoundError(DomainError):
+    """A requested entity does not exist. Mapped to a 404 at the API boundary."""
