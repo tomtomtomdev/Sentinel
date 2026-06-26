@@ -20,24 +20,25 @@
 
 ## Current state
 
-- **Phase:** not started — repository is being scaffolded.
-- **Last green commit:** _none yet._
-- **Test suite:** _not yet present._
-- **Schema/migrations:** _none yet._
+- **Phase:** S0 complete — green harness in place.
+- **Last green commit:** S0 scaffold (see detailed log below).
+- **Test suite:** 1 test (`tests/integration/test_health.py`), green via `just test`.
+- **Schema/migrations:** none yet (S1 adds Alembic init).
 - **Deployed:** no.
 
 ## Next action
 
-➡️ **Begin S0 — Scaffold & green harness** (`PLAN.md §5`). Create the `uv`
-backend project, ruff/mypy/pytest config, `justfile`, `GET /api/v1/health` with
-one passing test, and the CI workflow. Done when `just test` is green on a fresh
-clone and the first Conventional Commit is made.
+➡️ **Begin S1 — Monitor entity + repository** (`PLAN.md §5`). Add `domain`
+entities + the `MonitorRepository` port, an in-memory fake + SQLModel impl, and
+Alembic init + first migration. Unit-test entity invariants; integration-test
+the PG repo. Read the **sentinel-architecture** skill first (add-a-capability
+recipe).
 
 ---
 
 ## Slice checklist (mirror of `PLAN.md §5`)
 
-- [ ] **S0** Scaffold & green harness
+- [x] **S0** Scaffold & green harness
 - [ ] **S1** Monitor entity + repository (+ Alembic init)
 - [ ] **S2** Monitor CRUD API (+ header redaction)
 - [ ] **S3** curl import
@@ -74,7 +75,27 @@ clone and the first Conventional Commit is made.
 > Resume hint: <the very next concrete step>
 > ```
 
-_(empty — first entry will be S0)_
+### S0 — Scaffold & green harness  · 2026-06-26
+Done: `uv`-managed backend project boots and serves `GET /api/v1/health` →
+`{"status":"ok"}`. Full gate green: `just test` (1 test), `just lint`
+(ruff lint+format), `just types` (mypy strict). `just` installed locally (1.54).
+Tests: `tests/integration/test_health.py` — health via `httpx.ASGITransport`.
+Decisions: none new (no ADR forced). Notable setup choices: hatchling build
+backend with src layout (editable install → `import sentinel` resolves for
+pytest/mypy/uvicorn); ruff rule set `E,F,I,UP,B,ASYNC,S,C4,SIM` with `S101`
+ignored under `tests/`; mypy `strict`. CI = GitHub Actions (`astral-sh/setup-uv`)
+running sync → ruff → mypy → pytest.
+Files: `backend/pyproject.toml`, `backend/.python-version`,
+`backend/src/sentinel/{__init__,interface/{__init__,main},interface/api/{__init__,health}}.py`,
+`backend/tests/integration/test_health.py`, `justfile`, `.github/workflows/ci.yml`,
+`README.md`, `.gitignore`.
+Follow-ups / parked: pre-commit hooks (ruff+mypy+fast unit) NOT added in S0 —
+left in Parking lot to keep S0 minimal; revisit. Frontend toolchain (pnpm) and
+docker not installed yet — only needed at S11/S13.
+Commit(s): `chore(backend): scaffold S0 green harness — health endpoint, gate, CI`.
+Resume hint: start S1 — define the `Monitor` entity in
+`backend/src/sentinel/domain/entities.py` and write its invariant unit tests
+first (see sentinel-architecture recipe step 1).
 
 ---
 
