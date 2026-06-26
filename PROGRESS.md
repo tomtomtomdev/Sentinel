@@ -20,28 +20,37 @@
 
 ## Current state
 
-- **Phase:** S4 complete — Postman import (`parse_postman` + `POST /imports/postman`).
-- **Last green commit:** S4 (see detailed log below).
-- **Test suite:** 112 tests. `just test` (no DB) → 106 passed, 6 skipped (PG params).
-  With `TEST_DATABASE_URL` set → 112 passed (real Postgres contract).
-- **Schema/migrations:** unchanged from S1 — imports persist nothing; CRUD uses
-  the existing `monitors` table. Alembic `6518c1e8…` still head.
-- **New dep:** `python-multipart` (FastAPI file uploads). `uv.lock` updated.
+- **Phase:** S5 **split** into S5.1 + S5.2. **S5.1 complete** — pure assertion
+  engine + probe value objects + `HttpProbe` port (no I/O yet). S5.2 (httpx
+  adapter + `CheckResult` persistence + `POST /monitors/{id}/check`) is next.
+- **Last green commit:** S5.1 (see detailed log below).
+- **Test suite:** 149 tests. `just test` (no DB) → 143 passed, 6 skipped (PG params).
+  With `TEST_DATABASE_URL` set → 149 (real Postgres contract). +37 from S5.1.
+- **Schema/migrations:** unchanged from S1 — S5.1 persists nothing. Alembic
+  `6518c1e8…` still head. S5.2 adds a `check_results` table + migration.
+- **New code:** `domain/logic/{assertions,json_path}.py` (pure), probe value
+  objects (`ProbeRequest`/`ProbeResponse`/`AssertionResult`/`ErrorKind`) in
+  `domain/value_objects.py`, `HttpProbe` port in `domain/ports.py`. No new deps.
 - **Deployed:** no.
 
 ## Next action
 
-➡️ **Begin S5 — Probe + assertions engine** (`PLAN.md §5`). Add the `HttpProbe`
-port + an httpx async adapter (timeouts, redirects, error classification; capture
-TLS leaf `notAfter` on HTTPS); a pure `evaluate_assertions(response, assertions)
--> list[AssertionResult]` covering status / latency / body / json_path / header /
-`cert_expiry_days`; and `POST /monitors/{id}/check` that probes once and persists a
-`CheckResult` (transport failures become a recorded result, **never** an API
-error). Unit-test assertions exhaustively (incl. cert expiry + HTTP-skips-cert);
-integration-probe a local test server / `respx` across 200 / 5xx / slow / timeout /
-malformed-JSON. **Probe URLs are untrusted; SSRF guard wiring is S10 but don't
-weaken it.** Read **sentinel-probe-and-assertions** (and skim **sentinel-security**)
-first.
+➡️ **Begin S5.2 — probe adapter + CheckResult persistence + endpoint.** With the
+pure engine (S5.1) done: add the **`CheckResult` entity** (SPEC §4) + a
+`CheckResultRepository` port (in-memory fake + SQL impl) + Alembic migration for a
+`check_results` table; an **`HttpxProbe` adapter** implementing `HttpProbe` (shared
+`AsyncClient`, per-request timeout, bounded body sample, `response_size_bytes`,
+HTTPS TLS leaf `notAfter` → `cert_expires_at`, and transport-failure classification
+→ raise `ProbeError(kind: ErrorKind)`); a **probe use case** (`application/`) that
+builds the `ProbeRequest`, calls `HttpProbe.send`, runs `evaluate_assertions`,
+assembles + persists a `CheckResult` (transport failure → recorded failed result
+with the `ErrorKind`, **never** an API error; redact secret/injected headers in any
+stored sample); and **`POST /monitors/{id}/check`** returning the `CheckResult`.
+Test: API via fake `HttpProbe` through `dependency_overrides`; integration probe
+matrix via **`respx`** (add as a dev dep) across **200 / 200-with-failing-assertion
+/ 500 / slow→timeout / malformed-JSON**. **Probe URLs are untrusted; SSRF guard
+wiring is S10 but don't weaken it.** (Re-read **sentinel-probe-and-assertions** +
+skim **sentinel-security**.)
 
 ---
 
@@ -83,6 +92,43 @@ first.
 > Commit(s): <conventional commit subject lines>
 > Resume hint: <the very next concrete step>
 > ```
+
+### S5.1 — Assertion engine + probe value objects  · 2026-06-26
+Done: The pure heart of the probe is in place (no I/O). `evaluate_assertions(
+response, assertions, now) -> list[AssertionResult]` (`domain/logic/assertions.py`)
+covers every SPEC §3.4 type — `status_code` (equals/in/range), `max_latency_ms`,
+`body_contains`/`body_not_contains` (honours `case_sensitive`, default true),
+`json_path_equals`/`json_path_exists`, `header_equals` (case-insensitive name), and
+`cert_expiry_days` (`min_days`). Empty list → the §3.4 default (`status_code in
+200–299`). The engine **never raises**: malformed JSON, missing/bad path, missing
+params, and unknown assertion types each yield a failed `AssertionResult` with a
+clear `detail`; `cert_expiry_days` on plain HTTP (no cert) is **skipped**
+(`skipped=True, passed=True`) so it can't fail a non-TLS monitor. A small pure
+JSONPath resolver (`domain/logic/json_path.py`) supports the SPEC subset (`$`,
+dotted keys, `['k']`/`["k"]`, `[n]`/negative) and will be reused by S5b token
+extraction. New `domain` value objects: `ProbeRequest`, `ProbeResponse` (incl.
+`cert_expires_at`, bounded `body_sample`, `response_size_bytes`), `AssertionResult`,
+`ErrorKind`. `HttpProbe` port defined in `domain/ports.py` (adapter is S5.2).
+Tests: `tests/unit/domain/test_assertions.py` (37 — every type × pass/fail,
+default-2xx parametrized, malformed-JSON-fails-cleanly, missing path, cert
+near/far/expired + HTTP-skip, header case-insensitivity, multiple-in-order, and
+unknown-type-no-raise). Suite: 143 passed / 6 skipped (no DB; 149 with PG). mypy
+strict + ruff clean. App still boots (`/api/v1/health` 200).
+Decisions: **D16** (assertion engine is one pure never-raising function with `now`
+injected, default-2xx, cert-skip semantics, and a documented JSONPath subset; probe
+VOs live in `domain`; `HttpProbe` port now, adapter + persistence in S5.2) added to
+PLAN §7.
+Files: `src/sentinel/domain/logic/{assertions,json_path}.py` (new),
+`src/sentinel/domain/value_objects.py` (+probe VOs), `src/sentinel/domain/ports.py`
+(+`HttpProbe`), `tests/unit/domain/test_assertions.py` (new).
+Follow-ups / parked: full JSONPath (filters/wildcards/recursive descent) parked —
+subset covers SPEC. `ErrorKind` is defined but unused until S5.2 wires it into
+`CheckResult` + transport classification.
+Commit(s): `feat(probe): pure assertion engine + probe value objects (S5.1)`.
+Resume hint: start S5.2 — write the failing integration probe-matrix test
+(`respx`: 200 / 200-with-failing-assertion / 500 / slow→timeout / malformed-JSON)
+and the `POST /monitors/{id}/check` API test (fake `HttpProbe`) before building the
+`HttpxProbe` adapter, `CheckResult` entity/repo/migration, and the probe use case.
 
 ### S4 — Postman import  · 2026-06-26
 Done: `POST /api/v1/imports/postman` accepts a `multipart/form-data` upload of a

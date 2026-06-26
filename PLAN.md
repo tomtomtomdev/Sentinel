@@ -369,6 +369,24 @@ stable (after S7), against a mock server if needed.
   `ValidationError` → the SPEC §5 `validation_error` (422) envelope. The shared
   import response model was renamed `CurlImportResponse` → `ImportResponse`.
 
+- **D16 — The assertion engine is one pure function that never raises, with a
+  documented JSONPath subset.** `evaluate_assertions(response, assertions, now) ->
+  list[AssertionResult]` lives in `domain/logic/assertions.py`. `now` is passed in
+  (not read from a `Clock`) so `cert_expiry_days` math is deterministic. A check's
+  `success` is `all(r.passed)`. Robustness rules: an empty assertion list evaluates
+  the SPEC §3.4 default (`status_code in 200–299`); a malformed body, a missing/
+  bad JSON path, missing params, or an **unknown assertion type** all produce a
+  failed `AssertionResult` with a clear `detail` rather than throwing — the engine
+  is the pure heart of the probe loop and must never raise. `cert_expiry_days` on
+  plain HTTP (no captured cert) is **skipped** (`skipped=True, passed=True`) so it
+  never fails a non-TLS monitor. JSONPath is a deliberate **subset** (a small pure
+  resolver in `domain/logic/json_path.py`: `$`, dotted keys, `['k']`/`["k"]`, and
+  `[n]`/negative indices) covering the SPEC examples and reused later by auth-source
+  token extraction (S5b); full JSONPath (filters/wildcards/recursive descent) is
+  parked. `ErrorKind`, `ProbeRequest`, `ProbeResponse`, `AssertionResult` are plain
+  `domain` value objects so pure code and tests never import httpx; the `HttpProbe`
+  port is defined now, its httpx adapter + `CheckResult` persistence land in S5.2.
+
 _Append new decisions here as `Dn — <decision>: <why>` when slices force a choice._
 
 ---

@@ -5,6 +5,7 @@ from typing import Protocol
 from uuid import UUID
 
 from sentinel.domain.entities import Monitor
+from sentinel.domain.value_objects import ProbeRequest, ProbeResponse
 
 
 class Clock(Protocol):
@@ -27,3 +28,20 @@ class MonitorRepository(Protocol):
     async def update(self, monitor: Monitor) -> Monitor: ...
 
     async def delete(self, monitor_id: UUID) -> bool: ...
+
+
+class HttpProbe(Protocol):
+    """Executes one outbound HTTP request and returns a `ProbeResponse`, capturing
+    status, latency, a bounded body sample, size, and (on HTTPS) the TLS leaf
+    cert's notAfter. The httpx adapter classifies transport failures (DNS,
+    connect, TLS, timeout) and raises `ProbeError`; the probe use case records
+    those as failed `CheckResult`s — they are never surfaced as API errors
+    (SPEC §3.3). The SSRF guard (S10) wraps this before sending."""
+
+    async def send(
+        self,
+        request: ProbeRequest,
+        *,
+        timeout_seconds: float,
+        follow_redirects: bool,
+    ) -> ProbeResponse: ...
