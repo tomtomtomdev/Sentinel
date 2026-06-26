@@ -301,6 +301,19 @@ stable (after S7), against a mock server if needed.
   The API must never be internet-exposed unauthenticated; a static token gate is
   cheap and ships well before the deploy slice.
 
+- **D10 — Audit timestamps stamped in the repository via an injected `Clock`,
+  not by `datetime.now()` or DB `server_default`.** `Monitor.created_at/updated_at`
+  are `None` until persisted; both the in-memory fake and the SQL repo stamp them
+  from the injected `Clock` (`created_at` preserved on update, `updated_at` bumped).
+  This keeps `domain` free of time calls (D4), makes the fake and real adapter
+  behave identically under one contract test, and sidesteps SQLModel/`server_default`
+  friction. Columns are `NOT NULL`. (S2's create use case will own the Clock wiring.)
+- **D11 — One repository contract test, two backends.** Repo behaviour is asserted
+  once and parametrized over the in-memory fake and real Postgres; the Postgres
+  param `skip`s when `TEST_DATABASE_URL` is unset, so `just test` is green on a
+  fresh clone without a DB while CI (a `postgres:16` service) runs it for real.
+  CI also runs `alembic upgrade head` to prove migrations apply.
+
 _Append new decisions here as `Dn — <decision>: <why>` when slices force a choice._
 
 ---

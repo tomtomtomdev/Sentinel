@@ -4,7 +4,12 @@ version = "0.1.0"
 description = "Sentinel — HTTP API monitoring web app"
 requires-python = ">=3.12,<3.13"
 dependencies = [
+    "alembic>=1.14",
+    "asyncpg>=0.30",
     "fastapi>=0.115",
+    "pydantic-settings>=2.6",
+    "sqlalchemy[asyncio]>=2.0",
+    "sqlmodel>=0.0.22",
     "uvicorn[standard]>=0.34",
 ]
 
@@ -28,12 +33,14 @@ packages = ["src/sentinel"]
 line-length = 100
 src = ["src", "tests"]
 target-version = "py312"
+extend-exclude = ["alembic/versions"]  # generated migrations
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "ASYNC", "S", "C4", "SIM"]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**" = ["S101"]  # assert is the point of a test
+# asserts and fake secret literals are expected in tests
+"tests/**" = ["S101", "S105", "S106"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
