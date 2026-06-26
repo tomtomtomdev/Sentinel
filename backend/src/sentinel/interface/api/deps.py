@@ -12,12 +12,13 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sentinel.application.check_service import CheckService
 from sentinel.application.monitor_service import MonitorService
 from sentinel.config import get_settings
-from sentinel.domain.ports import Clock, HttpProbe
+from sentinel.domain.ports import Clock, HttpProbe, SecretBox
 from sentinel.infrastructure.clock import SystemClock
 from sentinel.infrastructure.db.check_result_repository import SqlCheckResultRepository
 from sentinel.infrastructure.db.engine import create_engine, create_session_factory
 from sentinel.infrastructure.db.monitor_repository import SqlMonitorRepository
 from sentinel.infrastructure.probe import HttpxProbe
+from sentinel.infrastructure.secrets import FernetSecretBox
 
 
 @lru_cache
@@ -30,8 +31,18 @@ def get_clock() -> Clock:
     return SystemClock()
 
 
+@lru_cache
+def get_secret_box() -> SecretBox:
+    """The process-wide `SecretBox` for at-rest encryption. Built lazily from the
+    `SECRET_KEY` key ring so importing the app needs no key; constructing it with an
+    empty ring fails fast with a clear message (see `.env.example`)."""
+    return FernetSecretBox(get_settings().secret_key_ring())
+
+
 def get_monitor_service() -> MonitorService:
-    repository = SqlMonitorRepository(get_session_factory(), clock=get_clock())
+    repository = SqlMonitorRepository(
+        get_session_factory(), clock=get_clock(), secret_box=get_secret_box()
+    )
     return MonitorService(repository)
 
 
@@ -46,7 +57,7 @@ def get_check_service() -> CheckService:
     factory = get_session_factory()
     clock = get_clock()
     return CheckService(
-        monitors=SqlMonitorRepository(factory, clock=clock),
+        monitors=SqlMonitorRepository(factory, clock=clock, secret_box=get_secret_box()),
         results=SqlCheckResultRepository(factory),
         probe=get_http_probe(),
         clock=clock,

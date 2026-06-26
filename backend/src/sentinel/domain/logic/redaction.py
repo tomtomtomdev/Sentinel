@@ -27,7 +27,10 @@ _SECRET_SUBSTRINGS = ("token", "secret", "key")
 _SCHEME_HEADER_NAMES = frozenset({"authorization", "proxy-authorization"})
 
 
-def _is_secret(name: str) -> bool:
+def is_secret_header(name: str) -> bool:
+    """Whether a header name carries a secret value (case-insensitive). The single
+    source of truth for "what is secret", shared by API redaction and at-rest
+    encryption so the two never drift."""
     lowered = name.lower()
     if lowered in _SECRET_HEADER_NAMES:
         return True
@@ -43,7 +46,7 @@ def redact(headers: dict[str, str]) -> dict[str, str]:
     """
     redacted: dict[str, str] = {}
     for name, value in headers.items():
-        if not _is_secret(name):
+        if not is_secret_header(name):
             redacted[name] = value
         elif name.lower() in _SCHEME_HEADER_NAMES and " " in value:
             scheme = value.split(" ", 1)[0]

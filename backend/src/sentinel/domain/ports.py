@@ -41,6 +41,18 @@ class CheckResultRepository(Protocol):
     ) -> list[CheckResult]: ...
 
 
+class SecretBox(Protocol):
+    """Encrypts secret values for storage and decrypts them at the point of use
+    (SPEC §6). Key-ring aware so keys rotate without re-encrypting existing
+    ciphertext (the `MultiFernet` adapter encrypts with the first key in the ring
+    and decrypts with any). The domain only depends on this behaviour, never on
+    the crypto library."""
+
+    def encrypt(self, plaintext: str) -> bytes: ...
+
+    def decrypt(self, token: bytes) -> str: ...
+
+
 class HttpProbe(Protocol):
     """Executes one outbound HTTP request and returns a `ProbeResponse`, capturing
     status, latency, a bounded body sample, size, and (on HTTPS) the TLS leaf

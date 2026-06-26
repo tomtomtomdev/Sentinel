@@ -20,33 +20,42 @@
 
 ## Current state
 
-- **Phase:** **S5 complete** (both sub-slices). S5.1 = pure assertion engine +
-  probe value objects + `HttpProbe` port. S5.2 = `HttpxProbe` adapter +
-  `CheckResult` entity/repo/migration + `CheckService` use case + `POST
-  /monitors/{id}/check`. Manual checks now run, evaluate assertions, and persist a
-  result; transport failures are recorded, never raised as API errors.
-- **Last green commit:** S5.2 (see detailed log below).
-- **Test suite:** 172 tests. `just test` (no DB) → 162 passed, 10 skipped (PG params:
-  6 monitor + 4 check-result contract). With `TEST_DATABASE_URL` set → 172 passed.
-  +23 from S5.2 (37 from S5.1). Verified locally against a real Postgres.
-- **Schema/migrations:** Alembic head is now `533b92f6…` (`create_check_results
-  table`, chained off `6518c1e8…`). Verified `alembic upgrade head` applies both
-  tables + the `ix_check_results_monitor_id` index on a fresh DB.
-- **New dep:** `respx` (dev only — probe matrix mocking). `uv.lock` updated.
+- **Phase:** **S5a complete** — secret-at-rest. A `SecretBox` port +
+  `FernetSecretBox` (`MultiFernet`) adapter encrypt monitor secret-bearing header
+  values **at the SQL repository boundary** (encrypt on write, decrypt on read), so
+  the `Monitor` entity stays plaintext and the DB row holds ciphertext. Key ring
+  from `SECRET_KEY` (comma-separated; encrypt-with-first, decrypt-with-any →
+  rotation is prepend-and-redeploy). Secret-header classification is shared with API
+  redaction (`is_secret_header`) so the two can't drift. S5/S5.1/S5.2 before it:
+  probe adapter + assertion engine + `CheckService` + `POST /monitors/{id}/check`.
+- **Last green commit:** S5.2; S5a staged for commit (see detailed log below).
+- **Test suite:** 187 tests. `just test` (no DB) → 175 passed, 11 skipped (PG params:
+  7 monitor incl. at-rest + 4 check-result contract). With `TEST_DATABASE_URL` set →
+  186 passed (the 1 remaining skip is the cert-parse path with no real TLS server).
+  +13 from S5a. Verified locally against real Postgres (`sentinel_test`).
+- **Schema/migrations:** Alembic head unchanged (`533b92f6…`). **No migration in
+  S5a** — Fernet tokens are ASCII strings stored in the existing JSONB `headers`
+  column; no legacy data to convert.
+- **Deps:** `cryptography>=43` added (runtime). `respx` (dev). `uv.lock` updated.
+- **Config:** `SECRET_KEY` key ring added to `sentinel.config`; `backend/.env.example`
+  shipped. App boots without it (lazy `lru_cache` `SecretBox`; empty ring fails fast
+  only when actually constructed).
 - **Deployed:** no.
 
 ## Next action
 
-➡️ **Begin S5a — Secret-at-rest (`SecretBox`, key-ring).** Add a `SecretBox` port
-+ a **`MultiFernet`** impl (key ring from `SECRET_KEY`; encrypt with the first,
-decrypt with any) so keys rotate without breaking stored ciphertext; add the
-`cryptography` dep. Encrypt monitor auth secrets (header values / `auth`) on persist
-and decrypt only at probe time (the `CheckService`/`_to_probe_request` is the
-decrypt point); ship `.env.example`. Unit-test round-trip, ciphertext-at-rest, and
-decrypt-after-rotation. _Pulled ahead of the auth source (S5b), which caches live
-secrets._ Read **sentinel-security** first. (Note: today the SQL repos still store
-header/auth secrets **plaintext** — S5a closes that; redaction at the API boundary
-already holds.)
+➡️ **Begin S5b — Auth source / token provider.** `AuthSource` entity (+ `mode`:
+custom / oauth2 grants) + repo + `TokenStore`; pure `build_token_request`,
+`build_oauth_token_request`, `extract_token`, `resolve_auth`, `apply_injection`;
+auth-source CRUD + `POST /auth-sources/{id}/refresh`; monitor gains a populated
+`auth_source_id` flow; the probe pipeline injects the token, refreshes proactively
+(expiry window) and reactively (one refresh + one retry on 401/403), with OAuth2
+client-credentials build + refresh-token reuse and a per-source single-flight lock.
+Credentials/tokens encrypted via `SecretBox` (now available) and decrypted **at the
+point of injection** (`_to_probe_request` is the seam) — note this is the
+decrypt-at-use case D18 deferred to here; the token must never land in a stored
+`CheckResult` sample. Read **sentinel-auth-source** (and **sentinel-security**)
+first. Write the failing pure-logic unit tests before any I/O.
 
 ---
 
@@ -58,7 +67,7 @@ already holds.)
 - [x] **S3** curl import
 - [x] **S4** Postman import
 - [x] **S5** Probe + assertions engine (S5.1 pure engine + S5.2 adapter/persist/endpoint)
-- [ ] **S5a** Secret-at-rest (`SecretBox` / Fernet)
+- [x] **S5a** Secret-at-rest (`SecretBox` / Fernet)
 - [ ] **S5b** Auth source / token provider
 - [ ] **S6** Scheduler runner
 - [ ] **S7** State, stats & history
@@ -88,6 +97,60 @@ already holds.)
 > Commit(s): <conventional commit subject lines>
 > Resume hint: <the very next concrete step>
 > ```
+
+### S5a — Secret-at-rest (`SecretBox`, key-ring)  · 2026-06-27
+Done: Monitor secret-bearing header values are now **encrypted at rest**. New
+`SecretBox` port (`encrypt(str) -> bytes` / `decrypt(bytes) -> str`,
+`domain/ports.py`) + `FernetSecretBox` adapter (`infrastructure/secrets.py`) over
+`cryptography.fernet.MultiFernet`: the ring is parsed from `SECRET_KEY` (comma-
+separated Fernet keys) — **encrypt with the first key, decrypt with any**, so
+rotating is prepend-a-key-and-redeploy with no re-encryption. Encryption is
+**transparent at the `SqlMonitorRepository` boundary** (`_encrypt_headers` on write,
+`_decrypt_headers` on read); the `Monitor` entity always carries plaintext (SPEC §4)
+and the DB row never does. Which headers are secret is decided by the **same**
+`is_secret_header` classifier that drives API redaction (promoted from private
+`_is_secret` in `domain/logic/redaction.py`) so encryption and redaction can't
+drift. `CheckService`/`_to_probe_request` and the whole domain/application layer are
+unchanged (crypto-free). `SecretBox` is built lazily (`lru_cache get_secret_box`) in
+`deps.py` and injected into both `SqlMonitorRepository` sites; the app boots with no
+`SECRET_KEY` (empty ring fails fast only when actually constructed). Shipped
+`backend/.env.example` (DATABASE_URL + SECRET_KEY with generation + rotation notes).
+Tests: `tests/unit/infrastructure/test_secret_box.py` (7 — round-trip, ciphertext-
+not-plaintext, non-deterministic, empty-plaintext, decrypt-after-rotation,
+encrypt-with-first-key, empty-ring-raises); `tests/unit/test_config.py` (3 —
+`secret_key_ring` split/strip/blank-drop/empty); `tests/unit/infrastructure/
+test_monitor_row_mapping.py` (3 — DB-free: secret values ciphered + others pass
+through, full round-trip, empty headers); `tests/integration/test_monitor_repository.py`
+(+1 Postgres-only: ciphertext in the raw `MonitorRow`, `get` decrypts; fixture now
+injects a `FernetSecretBox`). Suite: 175 passed / 11 skipped (no DB); 186 passed
+with PG (`sentinel_test`). ruff + mypy strict clean. App boots; `/api/v1/health` 200.
+Decisions: **D18** (transparent at-rest encryption at the repo boundary — not at
+probe time — keeping domain/application crypto-free; MultiFernet key ring; shared
+`is_secret_header`; no migration; `auth.secret_ref` is a non-secret reference; S5b
+owns decrypt-at-injection for dynamic tokens) added to PLAN §7.
+Files: `src/sentinel/domain/ports.py` (+`SecretBox`),
+`src/sentinel/infrastructure/secrets.py` (new),
+`src/sentinel/config.py` (+`secret_key`/`secret_key_ring`),
+`src/sentinel/domain/logic/redaction.py` (`_is_secret`→`is_secret_header`),
+`src/sentinel/infrastructure/db/monitor_repository.py` (encrypt/decrypt headers +
+`SecretBox` ctor param),
+`src/sentinel/interface/api/deps.py` (+`get_secret_box`, wired into both repos),
+`backend/pyproject.toml` (+`cryptography`), `backend/uv.lock`, `backend/.env.example` (new),
+`tests/unit/infrastructure/{test_secret_box,test_monitor_row_mapping}.py` (new),
+`tests/unit/test_config.py` (new),
+`tests/integration/test_monitor_repository.py` (secret_box fixture + at-rest test).
+Follow-ups / parked: auth-source credentials + cached tokens + **injected** tokens
+(decrypt-at-use) are S5b; `AlertChannel.config` secrets are S9; SSRF guard on
+outbound URLs is S10. `auth.secret_ref` stays plaintext (it is a reference, not a
+secret). No data migration was needed (no production data; tokens fit the JSONB
+column). The empty-ring failure surfaces only when a real `SecretBox` is built —
+add a startup config check if/when desired (parked).
+Commit(s): `feat(security): encrypt monitor header secrets at rest via SecretBox key-ring (S5a)`.
+Resume hint: start S5b — write failing unit tests for the pure auth functions
+(`build_token_request`, `build_oauth_token_request`, `extract_token` reusing the
+S5.1 JSONPath resolver, `resolve_auth` use-cached-vs-refresh, `apply_injection`)
+before the `AuthSource` entity/repo/`TokenStore` and the refresh endpoint; tokens
+encrypt via `SecretBox` and decrypt only at injection in `_to_probe_request`.
 
 ### S5.2 — Probe adapter + CheckResult persistence + endpoint  · 2026-06-26
 Done: `POST /api/v1/monitors/{id}/check` runs one probe immediately, evaluates the

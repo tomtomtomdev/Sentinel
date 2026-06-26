@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 from uuid import uuid4
 
 import pytest
+from cryptography.fernet import Fernet
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlmodel import SQLModel
 
@@ -17,10 +18,13 @@ from sentinel.domain.ports import MonitorRepository
 from sentinel.domain.value_objects import Assertion, Auth, AuthType, BodyKind, HttpMethod
 from sentinel.infrastructure.db import models  # noqa: F401  -- register tables on metadata
 from sentinel.infrastructure.db.engine import create_session_factory
+from sentinel.infrastructure.db.models import MonitorRow
 from sentinel.infrastructure.db.monitor_repository import SqlMonitorRepository
+from sentinel.infrastructure.secrets import FernetSecretBox
 from tests.support.fakes import FixedClock, InMemoryMonitorRepository
 
 CLOCK_NOW = datetime(2026, 6, 26, 9, 0, tzinfo=UTC)
+TEST_SECRET_KEY = Fernet.generate_key().decode()
 
 
 def sample_monitor(**overrides: object) -> Monitor:
@@ -60,7 +64,11 @@ async def repo(request: pytest.FixtureRequest) -> AsyncIterator[MonitorRepositor
         await conn.run_sync(SQLModel.metadata.drop_all)
         await conn.run_sync(SQLModel.metadata.create_all)
     try:
-        yield SqlMonitorRepository(create_session_factory(engine), clock=clock)
+        yield SqlMonitorRepository(
+            create_session_factory(engine),
+            clock=clock,
+            secret_box=FernetSecretBox([TEST_SECRET_KEY]),
+        )
     finally:
         async with engine.begin() as conn:
             await conn.run_sync(SQLModel.metadata.drop_all)
@@ -131,3 +139,40 @@ async def test_delete_removes_and_reports(repo: MonitorRepository) -> None:
     assert await repo.delete(created.id) is True
     assert await repo.get(created.id) is None
     assert await repo.delete(created.id) is False
+
+
+async def test_secret_header_values_are_encrypted_at_rest() -> None:
+    """SPEC §6 — secret-bearing header values persist as ciphertext, never
+    plaintext; `get` transparently decrypts. Postgres-only (inspects the raw row)."""
+    url = os.getenv("TEST_DATABASE_URL")
+    if not url:
+        pytest.skip("TEST_DATABASE_URL not set; skipping at-rest encryption check")
+
+    engine = create_async_engine(url)
+    async with engine.begin() as conn:
+        await conn.run_sync(SQLModel.metadata.drop_all)
+        await conn.run_sync(SQLModel.metadata.create_all)
+    box = FernetSecretBox([TEST_SECRET_KEY])
+    factory = create_session_factory(engine)
+    repo = SqlMonitorRepository(factory, clock=FixedClock(CLOCK_NOW), secret_box=box)
+    try:
+        created = await repo.add(sample_monitor())
+
+        async with factory() as session:
+            row = await session.get(MonitorRow, created.id)
+            assert row is not None
+            # Stored ciphertext is not the plaintext...
+            assert row.headers["Authorization"] != "Bearer t"
+            assert row.headers["X-Api-Key"] != "k"
+            # ...but decrypts back to it, and non-secret headers stay readable.
+            assert box.decrypt(row.headers["Authorization"].encode("ascii")) == "Bearer t"
+            assert box.decrypt(row.headers["X-Api-Key"].encode("ascii")) == "k"
+
+        # The repository decrypts on read, so callers see plaintext.
+        fetched = await repo.get(created.id)
+        assert fetched is not None
+        assert fetched.headers == {"X-Api-Key": "k", "Authorization": "Bearer t"}
+    finally:
+        async with engine.begin() as conn:
+            await conn.run_sync(SQLModel.metadata.drop_all)
+        await engine.dispose()

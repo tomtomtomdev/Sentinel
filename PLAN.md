@@ -411,6 +411,34 @@ stable (after S7), against a mock server if needed.
   `FakeHttpProbe` via `dependency_overrides` (D13). Typed column expressions in the
   SQL repo use SQLModel's `col()` to satisfy mypy strict.
 
+- **D18 — Monitor secrets are encrypted transparently at the repository boundary,
+  not at probe time.** S5a adds a `SecretBox` port (`encrypt(str) -> bytes`,
+  `decrypt(bytes) -> str`) with a `FernetSecretBox` adapter over
+  `cryptography.fernet.MultiFernet` (key ring from `SECRET_KEY`, comma-separated;
+  **encrypt with the first key, decrypt with any** → rotation is prepend-and-
+  redeploy). The `SqlMonitorRepository` is the single encryption boundary: it
+  encrypts secret-bearing header values on write (`_encrypt_headers`) and decrypts
+  them on read (`_decrypt_headers`), so the `Monitor` entity always carries
+  plaintext (SPEC §4) and the DB row never does. This **refines** the earlier
+  "decrypt only at probe time / `CheckService` is the decrypt point" note: doing it
+  in the repo keeps `domain` and `application` crypto-free (the `CheckService` and
+  `_to_probe_request` are unchanged), keeps the repository round-trip contract
+  intact, and confines crypto to one auditable place (D5). It still fully satisfies
+  SPEC §6 (ciphertext at rest + redaction at the API boundary + MultiFernet
+  rotation). Which headers are secret is decided by the **same** `is_secret_header`
+  classifier that drives redaction (exported from `domain/logic/redaction.py`), so
+  encryption and redaction can never drift. Fernet tokens (ASCII base64) are stored
+  as plain strings in the existing JSONB `headers` column — **no migration**, and no
+  legacy data to convert. `auth.secret_ref` is a *reference*, not a secret value, so
+  it is left untouched; actual auth-source credentials and **dynamically injected
+  tokens** are encrypted and decrypted at the point of use in S5b (where
+  decrypt-at-injection genuinely applies, since tokens never round-trip through an
+  entity or DTO). The `SecretBox` is built lazily (`lru_cache`) in `deps.py`, so the
+  app boots without `SECRET_KEY`; constructing it with an empty ring fails fast.
+  Ships `backend/.env.example`. Unit tests cover the crypto (round-trip, ciphertext,
+  rotation, encrypt-with-first, empty-ring) and the header mapping DB-free; a
+  Postgres-only test asserts ciphertext in the raw row.
+
 _Append new decisions here as `Dn — <decision>: <why>` when slices force a choice._
 
 ---
