@@ -5,7 +5,14 @@ from datetime import datetime
 from uuid import UUID, uuid4
 
 from sentinel.domain.errors import ValidationError
-from sentinel.domain.value_objects import Assertion, Auth, BodyKind, HttpMethod
+from sentinel.domain.value_objects import (
+    Assertion,
+    AssertionResult,
+    Auth,
+    BodyKind,
+    ErrorKind,
+    HttpMethod,
+)
 
 MIN_INTERVAL_SECONDS = 30
 DEFAULT_INTERVAL_SECONDS = 300
@@ -56,3 +63,24 @@ class Monitor:
             raise ValidationError(f"failure_threshold must be >= {MIN_THRESHOLD}")
         if self.recovery_threshold < MIN_THRESHOLD:
             raise ValidationError(f"recovery_threshold must be >= {MIN_THRESHOLD}")
+
+
+@dataclass
+class CheckResult:
+    """The recorded outcome of one probe (SPEC §4). A fact, not a request — it has
+    no invariants. Transport failures are recorded here with `success=False` and an
+    `error` (never raised as an API error, SPEC §3.3); on transport failure the
+    response fields (`status_code`, `latency_ms`, `response_size_bytes`) are `None`.
+    When the request succeeded but an assertion failed, `error` is `assertion`."""
+
+    monitor_id: UUID
+    started_at: datetime
+    finished_at: datetime
+    success: bool
+    status_code: int | None = None
+    latency_ms: int | None = None
+    response_size_bytes: int | None = None
+    cert_expires_at: datetime | None = None
+    error: ErrorKind | None = None
+    assertion_results: list[AssertionResult] = field(default_factory=list)
+    id: UUID = field(default_factory=uuid4)

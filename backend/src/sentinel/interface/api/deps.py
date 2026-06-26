@@ -9,12 +9,15 @@ from functools import lru_cache
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from sentinel.application.check_service import CheckService
 from sentinel.application.monitor_service import MonitorService
 from sentinel.config import get_settings
-from sentinel.domain.ports import Clock
+from sentinel.domain.ports import Clock, HttpProbe
 from sentinel.infrastructure.clock import SystemClock
+from sentinel.infrastructure.db.check_result_repository import SqlCheckResultRepository
 from sentinel.infrastructure.db.engine import create_engine, create_session_factory
 from sentinel.infrastructure.db.monitor_repository import SqlMonitorRepository
+from sentinel.infrastructure.probe import HttpxProbe
 
 
 @lru_cache
@@ -30,3 +33,21 @@ def get_clock() -> Clock:
 def get_monitor_service() -> MonitorService:
     repository = SqlMonitorRepository(get_session_factory(), clock=get_clock())
     return MonitorService(repository)
+
+
+@lru_cache
+def get_http_probe() -> HttpProbe:
+    """One shared probe (and its pooled `AsyncClient`) for the process. Built
+    lazily so importing the app opens no client; the event loop binds on first use."""
+    return HttpxProbe()
+
+
+def get_check_service() -> CheckService:
+    factory = get_session_factory()
+    clock = get_clock()
+    return CheckService(
+        monitors=SqlMonitorRepository(factory, clock=clock),
+        results=SqlCheckResultRepository(factory),
+        probe=get_http_probe(),
+        clock=clock,
+    )

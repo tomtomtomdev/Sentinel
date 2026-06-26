@@ -21,6 +21,7 @@ dev = [
     "httpx>=0.28",
     "ruff>=0.9",
     "mypy>=1.14",
+    "respx>=0.21",
 ]
 
 [build-system]

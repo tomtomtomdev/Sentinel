@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Protocol
 from uuid import UUID
 
-from sentinel.domain.entities import Monitor
+from sentinel.domain.entities import CheckResult, Monitor
 from sentinel.domain.value_objects import ProbeRequest, ProbeResponse
 
 
@@ -28,6 +28,17 @@ class MonitorRepository(Protocol):
     async def update(self, monitor: Monitor) -> Monitor: ...
 
     async def delete(self, monitor_id: UUID) -> bool: ...
+
+
+class CheckResultRepository(Protocol):
+    """Persistence boundary for `CheckResult`s. `list_for_monitor` returns a
+    monitor's checks newest-first (S7 extends it with from/to windows)."""
+
+    async def add(self, result: CheckResult) -> CheckResult: ...
+
+    async def list_for_monitor(
+        self, monitor_id: UUID, *, limit: int = 100
+    ) -> list[CheckResult]: ...
 
 
 class HttpProbe(Protocol):

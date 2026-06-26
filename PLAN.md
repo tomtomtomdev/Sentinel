@@ -387,6 +387,30 @@ stable (after S7), against a mock server if needed.
   `domain` value objects so pure code and tests never import httpx; the `HttpProbe`
   port is defined now, its httpx adapter + `CheckResult` persistence land in S5.2.
 
+- **D17 — Probe adapter classifies-and-raises; the use case records-never-raises;
+  CheckResult stores no request/body sample.** The `HttpxProbe` adapter
+  (`infrastructure/probe.py`) is the only outbound-HTTP site: it measures latency
+  with a monotonic clock, caps the body sample (64 KB), and **classifies** httpx
+  transport errors into an `ErrorKind` (timeout / dns via `socket.gaierror` cause /
+  tls via `ssl.SSLError` / connection / unknown), raising a `ProbeError`.
+  `ProbeError` is intentionally **not** a `DomainError`, so it never reaches the
+  SPEC §5 envelope as a 4xx/5xx. The `CheckService` use case
+  (`application/check_service.py`) catches it and records a failed `CheckResult`
+  with that kind; a successful transport whose assertions fail records
+  `error=assertion`. `POST /monitors/{id}/check` therefore returns **200 with the
+  CheckResult** even for a down endpoint (SPEC §3.3). The persisted `CheckResult`
+  deliberately stores **no request headers and no body sample** (only
+  `assertion_results` + scalar fields per SPEC §4), which sidesteps secret/injected-
+  token leakage into stored samples until S5b adds injection. TLS leaf `notAfter`
+  is read best-effort from the response's `network_stream`/`ssl_object` (None on
+  plain HTTP or when unavailable, never raises); the OpenSSL date parse is extracted
+  to `parse_cert_not_after` and unit-tested. Probe **integration** tests use
+  `respx` (added as a dev dep) over the real adapter for the matrix (200 / 200-with-
+  failing-assertion / 500 / slow→timeout / malformed-JSON / connection-error),
+  asserting the persisted `CheckResult`; the API endpoint is tested with a scriptable
+  `FakeHttpProbe` via `dependency_overrides` (D13). Typed column expressions in the
+  SQL repo use SQLModel's `col()` to satisfy mypy strict.
+
 _Append new decisions here as `Dn — <decision>: <why>` when slices force a choice._
 
 ---

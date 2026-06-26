@@ -9,13 +9,20 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends
 
+from sentinel.application.check_service import CheckService
 from sentinel.application.monitor_service import MonitorService
-from sentinel.interface.api.deps import get_monitor_service
-from sentinel.interface.api.schemas import MonitorCreate, MonitorResponse, MonitorUpdate
+from sentinel.interface.api.deps import get_check_service, get_monitor_service
+from sentinel.interface.api.schemas import (
+    CheckResultResponse,
+    MonitorCreate,
+    MonitorResponse,
+    MonitorUpdate,
+)
 
 router = APIRouter(prefix="/monitors", tags=["monitors"])
 
 ServiceDep = Annotated[MonitorService, Depends(get_monitor_service)]
+CheckServiceDep = Annotated[CheckService, Depends(get_check_service)]
 
 
 @router.post("", response_model=MonitorResponse, status_code=201)
@@ -47,3 +54,10 @@ async def update_monitor(
 @router.delete("/{monitor_id}", status_code=204)
 async def delete_monitor(monitor_id: UUID, service: ServiceDep) -> None:
     await service.delete(monitor_id)
+
+
+@router.post("/{monitor_id}/check", response_model=CheckResultResponse)
+async def check_monitor(monitor_id: UUID, service: CheckServiceDep) -> CheckResultResponse:
+    """Run one probe immediately (SPEC §3.2). A transport failure is recorded and
+    returned as a failed `CheckResult`, not raised as an API error (SPEC §3.3)."""
+    return CheckResultResponse.from_entity(await service.run_check(monitor_id))

@@ -17,6 +17,7 @@ from sentinel.domain.entities import (
     DEFAULT_INTERVAL_SECONDS,
     DEFAULT_TIMEOUT_SECONDS,
     MIN_THRESHOLD,
+    CheckResult,
     Monitor,
 )
 from sentinel.domain.logic.redaction import redact
@@ -25,6 +26,7 @@ from sentinel.domain.value_objects import (
     Auth,
     AuthType,
     BodyKind,
+    ErrorKind,
     HttpMethod,
     MonitorDraft,
 )
@@ -225,3 +227,47 @@ class ImportResponse(BaseModel):
     persisted. The client saves drafts via the normal create endpoint."""
 
     drafts: list[MonitorDraftResponse]
+
+
+class AssertionResultDTO(BaseModel):
+    type: str
+    passed: bool
+    detail: str
+    skipped: bool
+
+
+class CheckResultResponse(BaseModel):
+    """The outcome of one probe (SPEC §4). On a transport failure the response
+    fields are null and `error` is the transport `ErrorKind`; a failed assertion
+    sets `error=assertion`. No secret request data or full body is stored here."""
+
+    id: UUID
+    monitor_id: UUID
+    started_at: datetime
+    finished_at: datetime
+    status_code: int | None
+    latency_ms: int | None
+    response_size_bytes: int | None
+    cert_expires_at: datetime | None
+    success: bool
+    error: ErrorKind | None
+    assertion_results: list[AssertionResultDTO]
+
+    @classmethod
+    def from_entity(cls, result: CheckResult) -> CheckResultResponse:
+        return cls(
+            id=result.id,
+            monitor_id=result.monitor_id,
+            started_at=result.started_at,
+            finished_at=result.finished_at,
+            status_code=result.status_code,
+            latency_ms=result.latency_ms,
+            response_size_bytes=result.response_size_bytes,
+            cert_expires_at=result.cert_expires_at,
+            success=result.success,
+            error=result.error,
+            assertion_results=[
+                AssertionResultDTO(type=a.type, passed=a.passed, detail=a.detail, skipped=a.skipped)
+                for a in result.assertion_results
+            ],
+        )

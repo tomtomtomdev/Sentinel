@@ -20,37 +20,33 @@
 
 ## Current state
 
-- **Phase:** S5 **split** into S5.1 + S5.2. **S5.1 complete** — pure assertion
-  engine + probe value objects + `HttpProbe` port (no I/O yet). S5.2 (httpx
-  adapter + `CheckResult` persistence + `POST /monitors/{id}/check`) is next.
-- **Last green commit:** S5.1 (see detailed log below).
-- **Test suite:** 149 tests. `just test` (no DB) → 143 passed, 6 skipped (PG params).
-  With `TEST_DATABASE_URL` set → 149 (real Postgres contract). +37 from S5.1.
-- **Schema/migrations:** unchanged from S1 — S5.1 persists nothing. Alembic
-  `6518c1e8…` still head. S5.2 adds a `check_results` table + migration.
-- **New code:** `domain/logic/{assertions,json_path}.py` (pure), probe value
-  objects (`ProbeRequest`/`ProbeResponse`/`AssertionResult`/`ErrorKind`) in
-  `domain/value_objects.py`, `HttpProbe` port in `domain/ports.py`. No new deps.
+- **Phase:** **S5 complete** (both sub-slices). S5.1 = pure assertion engine +
+  probe value objects + `HttpProbe` port. S5.2 = `HttpxProbe` adapter +
+  `CheckResult` entity/repo/migration + `CheckService` use case + `POST
+  /monitors/{id}/check`. Manual checks now run, evaluate assertions, and persist a
+  result; transport failures are recorded, never raised as API errors.
+- **Last green commit:** S5.2 (see detailed log below).
+- **Test suite:** 172 tests. `just test` (no DB) → 162 passed, 10 skipped (PG params:
+  6 monitor + 4 check-result contract). With `TEST_DATABASE_URL` set → 172 passed.
+  +23 from S5.2 (37 from S5.1). Verified locally against a real Postgres.
+- **Schema/migrations:** Alembic head is now `533b92f6…` (`create_check_results
+  table`, chained off `6518c1e8…`). Verified `alembic upgrade head` applies both
+  tables + the `ix_check_results_monitor_id` index on a fresh DB.
+- **New dep:** `respx` (dev only — probe matrix mocking). `uv.lock` updated.
 - **Deployed:** no.
 
 ## Next action
 
-➡️ **Begin S5.2 — probe adapter + CheckResult persistence + endpoint.** With the
-pure engine (S5.1) done: add the **`CheckResult` entity** (SPEC §4) + a
-`CheckResultRepository` port (in-memory fake + SQL impl) + Alembic migration for a
-`check_results` table; an **`HttpxProbe` adapter** implementing `HttpProbe` (shared
-`AsyncClient`, per-request timeout, bounded body sample, `response_size_bytes`,
-HTTPS TLS leaf `notAfter` → `cert_expires_at`, and transport-failure classification
-→ raise `ProbeError(kind: ErrorKind)`); a **probe use case** (`application/`) that
-builds the `ProbeRequest`, calls `HttpProbe.send`, runs `evaluate_assertions`,
-assembles + persists a `CheckResult` (transport failure → recorded failed result
-with the `ErrorKind`, **never** an API error; redact secret/injected headers in any
-stored sample); and **`POST /monitors/{id}/check`** returning the `CheckResult`.
-Test: API via fake `HttpProbe` through `dependency_overrides`; integration probe
-matrix via **`respx`** (add as a dev dep) across **200 / 200-with-failing-assertion
-/ 500 / slow→timeout / malformed-JSON**. **Probe URLs are untrusted; SSRF guard
-wiring is S10 but don't weaken it.** (Re-read **sentinel-probe-and-assertions** +
-skim **sentinel-security**.)
+➡️ **Begin S5a — Secret-at-rest (`SecretBox`, key-ring).** Add a `SecretBox` port
++ a **`MultiFernet`** impl (key ring from `SECRET_KEY`; encrypt with the first,
+decrypt with any) so keys rotate without breaking stored ciphertext; add the
+`cryptography` dep. Encrypt monitor auth secrets (header values / `auth`) on persist
+and decrypt only at probe time (the `CheckService`/`_to_probe_request` is the
+decrypt point); ship `.env.example`. Unit-test round-trip, ciphertext-at-rest, and
+decrypt-after-rotation. _Pulled ahead of the auth source (S5b), which caches live
+secrets._ Read **sentinel-security** first. (Note: today the SQL repos still store
+header/auth secrets **plaintext** — S5a closes that; redaction at the API boundary
+already holds.)
 
 ---
 
@@ -61,7 +57,7 @@ skim **sentinel-security**.)
 - [x] **S2** Monitor CRUD API (+ header redaction)
 - [x] **S3** curl import
 - [x] **S4** Postman import
-- [ ] **S5** Probe + assertions engine
+- [x] **S5** Probe + assertions engine (S5.1 pure engine + S5.2 adapter/persist/endpoint)
 - [ ] **S5a** Secret-at-rest (`SecretBox` / Fernet)
 - [ ] **S5b** Auth source / token provider
 - [ ] **S6** Scheduler runner
@@ -92,6 +88,66 @@ skim **sentinel-security**.)
 > Commit(s): <conventional commit subject lines>
 > Resume hint: <the very next concrete step>
 > ```
+
+### S5.2 — Probe adapter + CheckResult persistence + endpoint  · 2026-06-26
+Done: `POST /api/v1/monitors/{id}/check` runs one probe immediately, evaluates the
+monitor's assertions, persists a `CheckResult`, and returns it. The **`HttpxProbe`**
+adapter (`infrastructure/probe.py`) is the only outbound-HTTP site: shared
+`AsyncClient`, per-request `timeout`/`follow_redirects`, monotonic-clock latency, a
+64 KB-capped body sample, `response_size_bytes`, best-effort HTTPS TLS leaf
+`notAfter` → `cert_expires_at`, and transport-failure **classification** into an
+`ErrorKind` (timeout / dns via `socket.gaierror` cause / tls via `ssl.SSLError` /
+connection / unknown) raised as `ProbeError`. The **`CheckService`** use case
+(`application/check_service.py`) orchestrates: load monitor (→ `NotFoundError` 404 if
+missing) → build `ProbeRequest` → `HttpProbe.send` → `evaluate_assertions` (S5.1) →
+assemble + persist. A `ProbeError` is caught and recorded as a failed `CheckResult`
+with its kind — **never** raised as an API error (endpoint stays 200 for a down
+endpoint, SPEC §3.3); a failed assertion records `error=assertion`. New `CheckResult`
+entity (SPEC §4), `CheckResultRepository` port (in-memory fake + `SqlCheckResultRepository`),
+`check_results` table + Alembic migration `533b92f6…`. The persisted result stores
+**no request headers/body sample** (only `assertion_results` + scalars), avoiding
+secret leakage into samples pre-injection. `ProbeError` is a non-`DomainError` so the
+§5 envelope never turns it into a 4xx/5xx.
+Tests: `tests/integration/test_check_result_repository.py` (4×{memory,pg}=8 — all-
+field round-trip incl. JSONB assertion_results/ErrorKind, nullable transport-failure
+fields, per-monitor newest-first listing, limit); `tests/integration/test_probe_check_api.py`
+(5 — pass, failing-assertion→assertion error, transport-failure→recorded-not-raised,
+request-built-from-monitor, unknown→404; fake `HttpProbe` via `dependency_overrides`);
+`tests/integration/test_httpx_probe.py` (8 — `respx` matrix over the real adapter: 200
+pass / 200-fail-assertion / 500 / slow→timeout / malformed-JSON / connection-error /
+response-size×2, asserting the persisted result); `tests/unit/infrastructure/test_probe_cert.py`
+(2 — OpenSSL `notAfter` parse, incl. space-padded day). Suite: 162 passed / 10 skipped
+(no DB), 172 passed with PG. `alembic upgrade head` verified on a fresh DB. mypy strict
++ ruff clean. App boots (`/api/v1/health` 200).
+Decisions: **D17** (classify-and-raise in the adapter; record-never-raise in the use
+case; CheckResult stores no request/body sample; manual check returns 200; `respx`
+matrix + `FakeHttpProbe` API test; `col()` for typed columns) added to PLAN §7.
+Files: `src/sentinel/infrastructure/probe.py` (new),
+`src/sentinel/application/check_service.py` (new),
+`src/sentinel/infrastructure/db/check_result_repository.py` (new),
+`src/sentinel/domain/entities.py` (+`CheckResult`),
+`src/sentinel/domain/ports.py` (+`CheckResultRepository`),
+`src/sentinel/domain/errors.py` (+`ProbeError`),
+`src/sentinel/infrastructure/db/models.py` (+`CheckResultRow`),
+`alembic/versions/533b92f62713_create_check_results_table.py` (new),
+`src/sentinel/interface/api/{schemas.py (+CheckResult DTOs),monitors.py (+check route),deps.py (+probe/check wiring)}`,
+`tests/support/fakes.py` (+`InMemoryCheckResultRepository`,`FakeHttpProbe`),
+`tests/integration/{test_check_result_repository,test_probe_check_api,test_httpx_probe}.py`,
+`tests/unit/infrastructure/{__init__,test_probe_cert}.py`,
+`backend/pyproject.toml` (+`respx` dev), `backend/uv.lock`.
+Follow-ups / parked: monitor header/`auth` secrets still stored **plaintext** until
+S5a (`SecretBox`); auth-source token injection + reactive 401-refresh is S5b; SSRF
+guard around the probe URL is S10 (seam noted in `_to_probe_request`/`HttpProbe`
+docstrings, not weakened). Live-TLS cert capture is best-effort and not asserted in
+CI (no real TLS server in tests) — the parse + the cert-expiry assertion logic are
+unit-tested; verify end-to-end against a real HTTPS host manually. `GET
+/monitors/{id}/results` (history) + stats land in S7; `list_for_monitor` already
+exists on the repo for it.
+Commit(s): `feat(probe): httpx probe adapter, CheckResult persistence + manual check endpoint (S5.2)`.
+Resume hint: start S5a — write failing unit tests for a `SecretBox` round-trip,
+ciphertext-at-rest, and decrypt-after-key-rotation (`MultiFernet`) before adding the
+port + impl, the `cryptography` dep, encrypt-on-persist / decrypt-at-probe wiring,
+and `.env.example`.
 
 ### S5.1 — Assertion engine + probe value objects  · 2026-06-26
 Done: The pure heart of the probe is in place (no I/O). `evaluate_assertions(

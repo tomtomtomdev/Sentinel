@@ -7,8 +7,9 @@ import copy
 from datetime import datetime
 from uuid import UUID
 
-from sentinel.domain.entities import Monitor
+from sentinel.domain.entities import CheckResult, Monitor
 from sentinel.domain.ports import Clock
+from sentinel.domain.value_objects import ProbeRequest, ProbeResponse
 
 
 class FixedClock:
@@ -59,3 +60,47 @@ class InMemoryMonitorRepository:
 
     async def delete(self, monitor_id: UUID) -> bool:
         return self._store.pop(monitor_id, None) is not None
+
+
+class InMemoryCheckResultRepository:
+    """`CheckResultRepository` backed by a list. `list_for_monitor` returns the
+    monitor's results newest-first, mirroring the SQL adapter."""
+
+    def __init__(self) -> None:
+        self._store: list[CheckResult] = []
+
+    async def add(self, result: CheckResult) -> CheckResult:
+        stored = copy.deepcopy(result)
+        self._store.append(stored)
+        return copy.deepcopy(stored)
+
+    async def list_for_monitor(self, monitor_id: UUID, *, limit: int = 100) -> list[CheckResult]:
+        matches = [r for r in self._store if r.monitor_id == monitor_id]
+        matches.sort(key=lambda r: r.finished_at, reverse=True)
+        return [copy.deepcopy(r) for r in matches[:limit]]
+
+
+class FakeHttpProbe:
+    """A scriptable `HttpProbe`. Returns a queued `ProbeResponse` (or raises a
+    queued exception) per call, recording the requests it received. Lets the
+    probe use case be tested without any network (PLAN D4 — fakes over mocks)."""
+
+    def __init__(self, *, responses: list[ProbeResponse | Exception] | None = None) -> None:
+        self._queue: list[ProbeResponse | Exception] = list(responses or [])
+        self.requests: list[ProbeRequest] = []
+
+    def queue(self, item: ProbeResponse | Exception) -> None:
+        self._queue.append(item)
+
+    async def send(
+        self,
+        request: ProbeRequest,
+        *,
+        timeout_seconds: float,
+        follow_redirects: bool,
+    ) -> ProbeResponse:
+        self.requests.append(request)
+        item = self._queue.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        return item
