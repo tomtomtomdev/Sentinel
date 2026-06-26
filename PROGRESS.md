@@ -20,24 +20,28 @@
 
 ## Current state
 
-- **Phase:** S3 complete — curl import (`parse_curl` + `POST /imports/curl`).
-- **Last green commit:** S3 (see detailed log below).
-- **Test suite:** 80 tests. `just test` (no DB) → 74 passed, 6 skipped (PG params).
-  With `TEST_DATABASE_URL` set → 80 passed (real Postgres contract).
+- **Phase:** S4 complete — Postman import (`parse_postman` + `POST /imports/postman`).
+- **Last green commit:** S4 (see detailed log below).
+- **Test suite:** 112 tests. `just test` (no DB) → 106 passed, 6 skipped (PG params).
+  With `TEST_DATABASE_URL` set → 112 passed (real Postgres contract).
 - **Schema/migrations:** unchanged from S1 — imports persist nothing; CRUD uses
   the existing `monitors` table. Alembic `6518c1e8…` still head.
+- **New dep:** `python-multipart` (FastAPI file uploads). `uv.lock` updated.
 - **Deployed:** no.
 
 ## Next action
 
-➡️ **Begin S4 — Postman import** (`PLAN.md §5`). Pure `parse_postman(collection)
--> list[MonitorDraft]` in `domain/logic/` (flatten folders → one draft per request
-item; resolve `{{var}}` against the collection `variable` block, unresolved vars →
-per-draft warning), then `POST /api/v1/imports/postman` (multipart file upload).
-Reuse `MonitorDraft` + the import DTO/response shape from S3. Fixture-based unit
-tests over a small v2.1 collection (one request in a folder, one using a var, one
-undefined var). Treat collection content as untrusted data. Read
-**sentinel-architecture** first.
+➡️ **Begin S5 — Probe + assertions engine** (`PLAN.md §5`). Add the `HttpProbe`
+port + an httpx async adapter (timeouts, redirects, error classification; capture
+TLS leaf `notAfter` on HTTPS); a pure `evaluate_assertions(response, assertions)
+-> list[AssertionResult]` covering status / latency / body / json_path / header /
+`cert_expiry_days`; and `POST /monitors/{id}/check` that probes once and persists a
+`CheckResult` (transport failures become a recorded result, **never** an API
+error). Unit-test assertions exhaustively (incl. cert expiry + HTTP-skips-cert);
+integration-probe a local test server / `respx` across 200 / 5xx / slow / timeout /
+malformed-JSON. **Probe URLs are untrusted; SSRF guard wiring is S10 but don't
+weaken it.** Read **sentinel-probe-and-assertions** (and skim **sentinel-security**)
+first.
 
 ---
 
@@ -47,7 +51,7 @@ undefined var). Treat collection content as untrusted data. Read
 - [x] **S1** Monitor entity + repository (+ Alembic init)
 - [x] **S2** Monitor CRUD API (+ header redaction)
 - [x] **S3** curl import
-- [ ] **S4** Postman import
+- [x] **S4** Postman import
 - [ ] **S5** Probe + assertions engine
 - [ ] **S5a** Secret-at-rest (`SecretBox` / Fernet)
 - [ ] **S5b** Auth source / token provider
@@ -79,6 +83,52 @@ undefined var). Treat collection content as untrusted data. Read
 > Commit(s): <conventional commit subject lines>
 > Resume hint: <the very next concrete step>
 > ```
+
+### S4 — Postman import  · 2026-06-26
+Done: `POST /api/v1/imports/postman` accepts a `multipart/form-data` upload of a
+Postman v2.1 collection and returns `{"drafts": [...]}` (reviewable, nothing
+persisted). Pure `parse_postman(collection: dict) -> list[MonitorDraft]` flattens
+folders depth-first (one draft per request item), resolves `{{var}}` against the
+collection's `variable` block (unresolved → one dedup'd per-draft warning, never a
+failure), and extracts method (unknown → warn+GET), headers (skips `disabled`),
+url (string or object `raw`, host/path fallback), and body (`raw` → JSON via
+`options.raw.language` or shape; `urlencoded` → form `a=1&b=2`;
+`formdata`/`file`/`graphql` → warn + drop). Request-level `auth` maps bearer/basic
+→ an `Authorization` header (other types warn). Draft headers stay **unredacted**
+(echo for review, D14). Shared `coerce_method`/`derive_name`/`infer_body_kind`
+extracted to `domain/logic/import_common.py` and now back both importers (curl
+behaviour unchanged). Route validates the upload: non-JSON / non-object → domain
+`ValidationError` → SPEC §5 `validation_error` (422). `CurlImportResponse` renamed
+`ImportResponse` (shared by both routes).
+Tests: `tests/unit/domain/test_parse_postman.py` (27 — flattening incl. deep nest,
+var resolution incl. undefined/dedup/no-block, method/headers/disabled/url-object,
+body modes, bearer/basic/other auth, name derive, the §7 3-request acceptance
+collection); `tests/integration/test_postman_import_api.py` (5 — §7 acceptance via
+a real multipart upload of `tests/support/fixtures/postman_v21.json`, no-redaction,
+malformed JSON → 422 envelope, non-object JSON → 422, missing file → 422). Suite:
+106 passed / 6 skipped without a DB (112 with PG). mypy strict + ruff clean.
+Decisions: **D15** (Postman import reuses the curl pipeline via `import_common`;
+collection-`variable`-only var resolution; bearer/basic auth → header; faithful
+body-mode handling with warn-and-drop for multipart/file/graphql; multipart
+endpoint validates JSON object; `ImportResponse` rename) added to PLAN §7.
+Files: `src/sentinel/domain/logic/{import_common,postman_import}.py` (new),
+`src/sentinel/domain/logic/curl_import.py` (use shared helpers),
+`src/sentinel/interface/api/{schemas.py (ImportResponse),imports.py (postman route)}`,
+`backend/pyproject.toml` (+`python-multipart`), `backend/uv.lock`,
+`tests/unit/domain/test_parse_postman.py`,
+`tests/integration/test_postman_import_api.py`,
+`tests/support/fixtures/postman_v21.json`.
+Follow-ups / parked: query string still kept in `url` (not split to
+`query_params`, same as curl); folder/environment-scoped variables not resolved
+(collection `variable` block only, per SPEC); `formdata`/`file`/`graphql` bodies
+are dropped with a warning rather than approximated; auth-block tokens land
+plaintext in the `Authorization` header until S5a. Config export (monitor →
+collection) remains parked (SPEC §8).
+Commit(s): `feat(import): parse Postman v2.1 collections into drafts (S4)`.
+Resume hint: start S5 — write failing unit tests for
+`evaluate_assertions(response, assertions)` (status/latency/body/json_path/header/
+`cert_expiry_days`, incl. HTTP-skips-cert) and define the `HttpProbe` port +
+`ProbeResponse` before the httpx adapter and `POST /monitors/{id}/check`.
 
 ### S3 — curl import  · 2026-06-26
 Done: `POST /api/v1/imports/curl` parses a raw curl command into one reviewable

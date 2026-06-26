@@ -220,5 +220,8 @@ class MonitorDraftResponse(BaseModel):
         )
 
 
-class CurlImportResponse(BaseModel):
+class ImportResponse(BaseModel):
+    """Shared response for every importer (SPEC §5): reviewable drafts, nothing
+    persisted. The client saves drafts via the normal create endpoint."""
+
     drafts: list[MonitorDraftResponse]

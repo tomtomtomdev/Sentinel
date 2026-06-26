@@ -350,6 +350,25 @@ stable (after S7), against a mock server if needed.
   query string kept in `url` (not split into `query_params`), bundled short flags
   (`-fsSL`) treated as one unknown flag, `--data @file` kept literally.
 
+- **D15 — Postman import reuses the curl pipeline and stays as faithful as the
+  format allows.** `parse_postman(collection: dict) -> list[MonitorDraft]` is a pure
+  function (the route does the file read + `json.loads`; the parser never touches
+  I/O). Folders flatten depth-first to one draft per request item; `{{var}}`
+  resolves **only** against the collection's `variable` block (per SPEC — folder/
+  environment scopes are out), unresolved vars are left in place and surface as one
+  dedup'd warning each (never a failure, SPEC §7). Shared parsing helpers
+  (`coerce_method`, `derive_name`, `infer_body_kind`) were extracted to
+  `domain/logic/import_common.py` and now back **both** importers (DRY; curl tests
+  unchanged). Request-level `auth` maps bearer/basic → an `Authorization` header
+  (consistent with D14's curl `-u`); other auth types warn rather than silently
+  drop. Body modes: `raw` (JSON via `options.raw.language` or shape), `urlencoded`
+  → form `a=1&b=2` (disabled pairs skipped); `formdata`/`file`/`graphql` can't be
+  faithfully represented in one body string, so they warn and drop. Drafts stay
+  **unredacted** (D14). The endpoint is `multipart/form-data` (`UploadFile`,
+  requires `python-multipart`); a non-JSON upload or non-object JSON raises a domain
+  `ValidationError` → the SPEC §5 `validation_error` (422) envelope. The shared
+  import response model was renamed `CurlImportResponse` → `ImportResponse`.
+
 _Append new decisions here as `Dn — <decision>: <why>` when slices force a choice._
 
 ---

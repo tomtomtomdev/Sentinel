@@ -6,12 +6,10 @@ the command string is untrusted data. Supports `-X`/`--request`, `-H`/`--header`
 from __future__ import annotations
 
 import base64
-import json
-import re
 import shlex
-from urllib.parse import urlsplit
 
-from sentinel.domain.value_objects import BodyKind, HttpMethod, MonitorDraft
+from sentinel.domain.logic.import_common import coerce_method, derive_name, infer_body_kind
+from sentinel.domain.value_objects import HttpMethod, MonitorDraft
 
 _METHOD_FLAGS = {"-X", "--request"}
 _HEADER_FLAGS = {"-H", "--header"}
@@ -20,9 +18,6 @@ _URL_FLAGS = {"--url"}
 _USER_FLAGS = {"-u", "--user"}
 _FOLLOW_FLAGS = {"-L", "--location"}
 _KNOWN_BOOL_FLAGS = {"--compressed"}  # recognized; no bearing on a monitor draft
-
-_KNOWN_METHODS = {m.value for m in HttpMethod}
-_FORM_BODY = re.compile(r"^[^=&\s]+=[^&]*(&[^=&\s]+=[^&]*)*$")
 
 
 def parse_curl(command: str) -> MonitorDraft:
@@ -81,12 +76,12 @@ def parse_curl(command: str) -> MonitorDraft:
         url = ""
 
     return MonitorDraft(
-        name=_derive_name(resolved_method, url),
+        name=derive_name(resolved_method, url),
         url=url,
         method=resolved_method,
         headers=headers,
         body=body,
-        body_kind=_infer_body_kind(body, headers),
+        body_kind=infer_body_kind(body, headers),
         follow_redirects=follow_redirects,
         warnings=warnings,
     )
@@ -131,35 +126,4 @@ def _set_url(current: str | None, value: str | None, warnings: list[str]) -> str
 def _resolve_method(method: str | None, *, has_data: bool, warnings: list[str]) -> HttpMethod:
     if method is None:
         return HttpMethod.POST if has_data else HttpMethod.GET
-    if method not in _KNOWN_METHODS:
-        warnings.append(f"unsupported method '{method}', defaulting to GET")
-        return HttpMethod.GET
-    return HttpMethod(method)
-
-
-def _derive_name(method: HttpMethod, url: str) -> str:
-    if not url:
-        return method.value
-    path = urlsplit(url).path or "/"
-    return f"{method.value} {path}"
-
-
-def _infer_body_kind(body: str | None, headers: dict[str, str]) -> BodyKind:
-    if body is None:
-        return BodyKind.NONE
-    content_type = next((v.lower() for k, v in headers.items() if k.lower() == "content-type"), "")
-    if "json" in content_type:
-        return BodyKind.JSON
-    if "x-www-form-urlencoded" in content_type:
-        return BodyKind.FORM
-    stripped = body.strip()
-    if stripped[:1] in ("{", "["):
-        try:
-            json.loads(stripped)
-        except ValueError:
-            pass
-        else:
-            return BodyKind.JSON
-    if _FORM_BODY.match(stripped):
-        return BodyKind.FORM
-    return BodyKind.RAW
+    return coerce_method(method, warnings)
