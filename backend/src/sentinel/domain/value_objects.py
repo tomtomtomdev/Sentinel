@@ -115,3 +115,133 @@ class MonitorDraft:
     follow_redirects: bool = False
     assertions: list[Assertion] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+
+
+# --- Auth source / token provider (SPEC §3.9, §4) ---------------------------
+
+
+class AuthSourceMode(StrEnum):
+    """How Sentinel obtains a token from an auth source. `custom` replays the
+    stored raw request; the `oauth2_*` modes build the standard token request from
+    structured `OAuthConfig` fields."""
+
+    CUSTOM = "custom"
+    OAUTH2_CLIENT_CREDENTIALS = "oauth2_client_credentials"
+    OAUTH2_PASSWORD = "oauth2_password"  # noqa: S105 -- grant-mode label, not a secret
+    OAUTH2_REFRESH = "oauth2_refresh"
+
+
+class ExtractorKind(StrEnum):
+    """Where the access token is read from in the login response."""
+
+    JSON_PATH = "json_path"
+    HEADER = "header"
+    REGEX = "regex"
+
+
+class ExpiryKind(StrEnum):
+    """How a token's expiry is derived. `json_path_seconds` reads a relative
+    lifetime (e.g. `expires_in`), `absolute_path` an absolute timestamp,
+    `ttl_seconds` a fixed configured lifetime."""
+
+    JSON_PATH_SECONDS = "json_path_seconds"
+    ABSOLUTE_PATH = "absolute_path"
+    TTL_SECONDS = "ttl_seconds"
+
+
+class InjectionTarget(StrEnum):
+    """Where a dependent monitor's probe carries the token."""
+
+    HEADER = "header"
+    QUERY = "query"
+    BODY = "body"
+
+
+class ClientAuth(StrEnum):
+    """How OAuth2 client credentials are presented: in the form body
+    (`client_secret_post`) or an HTTP Basic header (`client_secret_basic`)."""
+
+    BODY = "body"
+    BASIC = "basic"
+
+
+class OAuthGrant(StrEnum):
+    """The OAuth2 grant a token request uses. The auth-source `mode` selects the
+    primary grant; `refresh_token` is used for refresh-token reuse regardless."""
+
+    CLIENT_CREDENTIALS = "client_credentials"
+    PASSWORD = "password"  # noqa: S105 -- OAuth grant name, not a secret
+    REFRESH_TOKEN = "refresh_token"  # noqa: S105 -- OAuth grant name, not a secret
+
+
+@dataclass(frozen=True)
+class TokenExtractor:
+    """Reads the access token out of a login response (SPEC §3.9). For
+    `json_path`/`header`, `expr` is the path/header name; for `regex`, the first
+    capturing group (or whole match) is the token."""
+
+    kind: ExtractorKind
+    expr: str
+
+
+@dataclass(frozen=True)
+class ExpirySpec:
+    """How to compute a token's expiry. `value` is a JSONPath for the path kinds
+    and a seconds count for `ttl_seconds`. `None` (no `ExpirySpec`) means
+    refresh-on-401 only."""
+
+    kind: ExpiryKind
+    value: str | int
+
+
+@dataclass(frozen=True)
+class Injection:
+    """How dependent monitors carry the token (SPEC §3.9). The rendered value is
+    `value_template` with `{token_type}`/`{token}` substituted."""
+
+    target: InjectionTarget
+    name: str
+    value_template: str = "{token_type} {token}"
+
+
+@dataclass(frozen=True)
+class OAuthConfig:
+    """Structured OAuth2 token-request config (SPEC §4). `client_secret`,
+    `username`, and `password` are secrets (encrypted at rest). `username`/
+    `password` back the `oauth2_password` grant."""
+
+    token_url: str
+    client_id: str
+    client_secret: str | None = None
+    scope: str | None = None
+    client_auth: ClientAuth = ClientAuth.BODY
+    username: str | None = None
+    password: str | None = None
+
+
+@dataclass(frozen=True)
+class Token:
+    """A freshly extracted token (SPEC §4 value object). `token_type` is governed
+    by the auth-source config, so it is not carried here."""
+
+    value: str
+    expires_at: datetime | None = None
+    refresh_token: str | None = None
+
+
+@dataclass(frozen=True)
+class InjectionPlan:
+    """The decision to inject an already-valid cached token: the injection spec
+    plus the resolved token + type to render into it (`resolve_auth` output)."""
+
+    injection: Injection
+    token: str
+    token_type: str
+
+
+@dataclass(frozen=True)
+class NeedsRefresh:
+    """`resolve_auth` outcome meaning the cached token is missing, expired, or
+    inside the proactive refresh window and must be regenerated first."""
+
+    reason: str

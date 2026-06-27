@@ -17,6 +17,13 @@ class NotFoundError(DomainError):
     """A requested entity does not exist. Mapped to a 404 at the API boundary."""
 
 
+class TokenExtractionError(DomainError):
+    """The configured extractor/expiry could not read a token from a login
+    response (SPEC §3.9). Raised by the pure `extract_token`; the refresh use case
+    catches it, records it as `TokenState.last_refresh_error`, and surfaces a
+    failed refresh — it is never an infinite retry."""
+
+
 class ProbeError(Exception):
     """A transport-level failure while probing (DNS, connect, TLS, timeout),
     carrying the classified `ErrorKind`. The httpx adapter raises it; the probe use

@@ -439,6 +439,30 @@ stable (after S7), against a mock server if needed.
   rotation, encrypt-with-first, empty-ring) and the header mapping DB-free; a
   Postgres-only test asserts ciphertext in the raw row.
 
+- **D19 — Auth source (S5b) is built bottom-up in four green sub-slices, pure
+  logic first.** S5b is large, so it is split: **S5b.1** the pure, I/O-free auth
+  logic + value objects/entities; **S5b.2** `AuthSource`/`TokenState` persistence
+  (ports, fakes, rows, migration, SQL repos with `SecretBox`); **S5b.3** CRUD +
+  manual-refresh API (redacted); **S5b.4** probe-pipeline injection + proactive/
+  reactive refresh + single-flight. The pure layer (`domain/logic/auth.py`) holds
+  the five SPEC §3.9 functions and **never raises except `TokenExtractionError`**;
+  `now` is injected so the refresh-window decision is deterministic. Design choices
+  baked into the value objects: `Token` carries `value`/`expires_at`/
+  `refresh_token` but **not** `token_type` — the token *type* is governed by the
+  auth-source config (`AuthSource.token_type`, default `Bearer`), so a login
+  response's `token_type` field is not captured in v1 (parked). `OAuthConfig` gains
+  optional `username`/`password` (secret) to back the `oauth2_password` grant,
+  which SPEC §4's field list omitted but the mode requires. `build_oauth_token_request`
+  follows RFC 6749: `client_auth=basic` puts identity in an `Authorization: Basic`
+  header (not the body), `client_auth=body` puts `client_id`/`client_secret` in the
+  form. `apply_injection` body-target sets a field in the JSON-object body (starting
+  from `{}` when empty); non-JSON bodies for body injection raise. `extract_token`
+  captures `refresh_token` best-effort from the JSON body regardless of extractor
+  kind. `resolve_auth` returns `NeedsRefresh` when `now >= expires_at - window`
+  (boundary inclusive). The dynamically injected token is decrypted only at the
+  point of injection and never lands in a stored `CheckResult` (this is the
+  decrypt-at-use case D18 deferred here).
+
 _Append new decisions here as `Dn — <decision>: <why>` when slices force a choice._
 
 ---
