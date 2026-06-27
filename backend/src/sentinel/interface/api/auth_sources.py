@@ -36,9 +36,7 @@ ClockDep = Annotated[Clock, Depends(get_clock)]
 
 
 @router.post("", response_model=AuthSourceResponse, status_code=201)
-async def create_auth_source(
-    payload: AuthSourceCreate, service: ServiceDep
-) -> AuthSourceResponse:
+async def create_auth_source(payload: AuthSourceCreate, service: ServiceDep) -> AuthSourceResponse:
     created = await service.create(payload.to_entity())
     return AuthSourceResponse.from_entity(created)
 
@@ -55,9 +53,7 @@ async def get_auth_source(
 ) -> AuthSourceResponse:
     source = await service.get(auth_source_id)
     state = await tokens.load(auth_source_id)
-    return AuthSourceResponse.from_entity(
-        source, TokenStateSummary.from_state(state, clock.now())
-    )
+    return AuthSourceResponse.from_entity(source, TokenStateSummary.from_state(state, clock.now()))
 
 
 @router.patch("/{auth_source_id}", response_model=AuthSourceResponse)
