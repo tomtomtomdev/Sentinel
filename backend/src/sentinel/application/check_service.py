@@ -1,22 +1,34 @@
-"""Probe use case (SPEC §3.2, §3.3). Orchestrates the ports — load the monitor,
-build a `ProbeRequest`, send it via `HttpProbe`, evaluate assertions (pure domain
-logic), then assemble and persist a `CheckResult`. This service holds flow only;
-the business rules live in `evaluate_assertions`.
+"""Probe use case (SPEC §3.2, §3.3, §3.9). Orchestrates the ports — load the
+monitor, build a `ProbeRequest`, optionally inject an auth-source token (proactive
+refresh), send it via `HttpProbe`, evaluate assertions (pure domain logic), then
+assemble and persist a `CheckResult`. This service holds flow only; the business
+rules live in `evaluate_assertions` and `domain.logic.auth`.
 
 A transport failure surfaces as a `ProbeError` and is recorded as a failed
 `CheckResult` carrying its `ErrorKind` — never re-raised as an API error
 (SPEC §3.3). A successful request whose assertions fail is recorded with
-`error=assertion`."""
+`error=assertion`. When the monitor links an auth source, a response whose status
+is in the source's `refresh_on_status` triggers exactly one reactive refresh + one
+retry (no loops); a persistent 401 is one recorded failed check."""
 
 from __future__ import annotations
 
+from datetime import datetime
 from uuid import UUID
 
-from sentinel.domain.entities import CheckResult, Monitor
+from sentinel.application.auth_token_service import AuthTokenService
+from sentinel.domain.entities import AuthSource, CheckResult, Monitor
 from sentinel.domain.errors import NotFoundError, ProbeError
 from sentinel.domain.logic.assertions import evaluate_assertions
-from sentinel.domain.ports import CheckResultRepository, Clock, HttpProbe, MonitorRepository
-from sentinel.domain.value_objects import ErrorKind, ProbeRequest
+from sentinel.domain.logic.auth import apply_injection
+from sentinel.domain.ports import (
+    AuthSourceRepository,
+    CheckResultRepository,
+    Clock,
+    HttpProbe,
+    MonitorRepository,
+)
+from sentinel.domain.value_objects import AssertionResult, ErrorKind, ProbeRequest, ProbeResponse
 
 
 class CheckService:
@@ -27,58 +39,122 @@ class CheckService:
         results: CheckResultRepository,
         probe: HttpProbe,
         clock: Clock,
+        auth_sources: AuthSourceRepository | None = None,
+        auth: AuthTokenService | None = None,
     ) -> None:
         self._monitors = monitors
         self._results = results
         self._probe = probe
         self._clock = clock
+        self._auth_sources = auth_sources
+        self._auth = auth
 
     async def run_check(self, monitor_id: UUID) -> CheckResult:
         monitor = await self._monitors.get(monitor_id)
         if monitor is None:
             raise NotFoundError(f"monitor {monitor_id} not found")
 
+        source = await self._load_auth_source(monitor)
         started_at = self._clock.now()
+        base_request = _to_probe_request(monitor)
+
+        request, did_refresh = await self._inject(source, base_request, started_at)
         try:
-            response = await self._probe.send(
-                _to_probe_request(monitor),
-                timeout_seconds=monitor.timeout_seconds,
-                follow_redirects=monitor.follow_redirects,
+            response = await self._send(monitor, request)
+            response = await self._maybe_reactive_retry(
+                monitor, source, base_request, response, did_refresh
             )
         except ProbeError as exc:
-            return await self._results.add(
-                CheckResult(
-                    monitor_id=monitor.id,
-                    started_at=started_at,
-                    finished_at=self._clock.now(),
-                    success=False,
-                    error=exc.kind,
-                )
-            )
+            return await self._record(monitor, started_at, success=False, error=exc.kind)
 
         finished_at = self._clock.now()
         assertion_results = evaluate_assertions(response, monitor.assertions, finished_at)
         success = all(r.passed for r in assertion_results)
+        return await self._record(
+            monitor,
+            started_at,
+            success=success,
+            error=None if success else ErrorKind.ASSERTION,
+            response=response,
+            assertion_results=assertion_results,
+            finished_at=finished_at,
+        )
+
+    async def _load_auth_source(self, monitor: Monitor) -> AuthSource | None:
+        if monitor.auth_source_id is None or self._auth_sources is None or self._auth is None:
+            return None
+        return await self._auth_sources.get(monitor.auth_source_id)
+
+    async def _inject(
+        self, source: AuthSource | None, request: ProbeRequest, now: datetime
+    ) -> tuple[ProbeRequest, bool]:
+        """Proactively resolve+inject the token. Returns the request to send and
+        whether a refresh happened (so the reactive path doesn't refresh twice)."""
+        if source is None or self._auth is None:
+            return request, False
+        plan, did_refresh = await self._auth.ensure_fresh(source, now)
+        return (apply_injection(request, plan) if plan is not None else request), did_refresh
+
+    async def _maybe_reactive_retry(
+        self,
+        monitor: Monitor,
+        source: AuthSource | None,
+        base_request: ProbeRequest,
+        response: ProbeResponse,
+        did_refresh: bool,
+    ) -> ProbeResponse:
+        """If the response status is in the source's `refresh_on_status` and we
+        haven't already refreshed this cycle, refresh once and retry the probe once."""
+        if (
+            source is None
+            or self._auth is None
+            or did_refresh
+            or response.status_code not in source.refresh_on_status
+        ):
+            return response
+        plan = await self._auth.force_refresh(source, self._clock.now())
+        retry = apply_injection(base_request, plan) if plan is not None else base_request
+        return await self._send(monitor, retry)
+
+    async def _send(self, monitor: Monitor, request: ProbeRequest) -> ProbeResponse:
+        return await self._probe.send(
+            request,
+            timeout_seconds=monitor.timeout_seconds,
+            follow_redirects=monitor.follow_redirects,
+        )
+
+    async def _record(
+        self,
+        monitor: Monitor,
+        started_at: datetime,
+        *,
+        success: bool,
+        error: ErrorKind | None,
+        response: ProbeResponse | None = None,
+        assertion_results: list[AssertionResult] | None = None,
+        finished_at: datetime | None = None,
+    ) -> CheckResult:
         return await self._results.add(
             CheckResult(
                 monitor_id=monitor.id,
                 started_at=started_at,
-                finished_at=finished_at,
+                finished_at=finished_at or self._clock.now(),
                 success=success,
-                status_code=response.status_code,
-                latency_ms=response.latency_ms,
-                response_size_bytes=response.response_size_bytes,
-                cert_expires_at=response.cert_expires_at,
-                error=None if success else ErrorKind.ASSERTION,
-                assertion_results=assertion_results,
+                status_code=response.status_code if response else None,
+                latency_ms=response.latency_ms if response else None,
+                response_size_bytes=response.response_size_bytes if response else None,
+                cert_expires_at=response.cert_expires_at if response else None,
+                error=error,
+                assertion_results=assertion_results or [],
             )
         )
 
 
 def _to_probe_request(monitor: Monitor) -> ProbeRequest:
     """Map a monitor to the request to issue. Auth-source token injection (S5b) and
-    the SSRF guard (S10) will wrap this; for now it carries the monitor's own
-    method/url/headers/body verbatim."""
+    the SSRF guard (S10) wrap this; it carries the monitor's own
+    method/url/headers/body verbatim. The injected token is never persisted in a
+    `CheckResult` (which stores no request/body sample)."""
     return ProbeRequest(
         method=monitor.method,
         url=monitor.url,

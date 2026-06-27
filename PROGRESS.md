@@ -20,28 +20,23 @@
 
 ## Current state
 
-- **Phase:** **S5b in progress — S5b.1+S5b.2+S5b.3 complete.** S5b is split into
-  four green-ending sub-slices (PLAN D19): **S5b.1** pure logic ✅ · **S5b.2**
-  `AuthSource`/`TokenState` persistence ✅ · **S5b.3** CRUD + manual-refresh API ✅ ·
-  **S5b.4** probe-pipeline injection + proactive/reactive refresh + single-flight.
-  S5b.3 added the auth-source API surface: `AuthSourceService` (CRUD) +
-  `AuthTokenService` (refresh orchestration), DTOs, and the routes
-  `POST/GET/GET{id}/PATCH/DELETE /api/v1/auth-sources` + `POST
-  /api/v1/auth-sources/{id}/refresh`. Responses **redact every credential** (request
-  body + secret headers + oauth `client_secret`/`password`); `GET/{id}` and refresh
-  include a metadata-only `token_state` summary (`status` via the pure
-  `token_status`, `obtained_at`, `expires_at`, `last_refresh_error`) — **never the
-  token value**. Refresh builds the mode's token request → probes → `extract_token`
-  → saves the cached `TokenState`; a transport/extraction failure is recorded as
-  `status=error` (HTTP 200), keeping any previously valid token. `MonitorService`
-  now validates `auth_source_id` exists (→ 422). S5b.1/.2 before it: pure logic +
-  persistence.
-- **Last green commit:** S5b.2 (`feat(auth): AuthSource/TokenState persistence…`);
-  S5b.3 staged.
-- **Test suite:** `just test` (no DB) → **235 passed, 23 skipped**. With
-  `TEST_DATABASE_URL=…/sentinel_test` → **258 passed**. New:
-  `tests/integration/test_auth_source_api.py` (12 — CRUD + redaction + refresh
-  metadata-only + monitor-link validation) and 5 `token_status` unit tests.
+- **Phase:** **S5b complete** — auth source / token provider (all four sub-slices,
+  PLAN D19+D20). A monitor can link an `AuthSource`; the probe pipeline injects its
+  token, refreshing **proactively** (missing/expired/within window) and
+  **reactively** (one refresh + one retry on a `refresh_on_status` code), capped at
+  one refresh per check (no loops). `AuthTokenService` owns all token behaviour —
+  manual/proactive/reactive refresh, **OAuth2 refresh-token reuse with fallback to a
+  full login**, and a per-source single-flight `asyncio.Lock`. Credentials + cached
+  tokens are encrypted at rest (`SecretBox`) and decrypted at use; the token never
+  appears in a response, log, or stored `CheckResult` sample. Full CRUD + manual
+  refresh API exists with credential redaction + metadata-only token status.
+- **Last green commit:** S5b.3 (`feat(auth): auth-source CRUD + manual-refresh…`);
+  S5b.4 staged.
+- **Test suite:** `just test` (no DB) → **241 passed, 23 skipped**. With
+  `TEST_DATABASE_URL=…/sentinel_test` → **264 passed**. New:
+  `tests/integration/test_probe_auth_injection.py` (6 — cached-inject, proactive
+  refresh, 401→one refresh+retry, persistent-401→one failed check, refresh-token
+  reuse, reuse-failure→full-login fallback).
 - **Schema/migrations:** head **`a7c3f1e9d2b4`** (unchanged since S5b.2).
 - **Deps:** unchanged.
 - **Config:** unchanged.
@@ -49,21 +44,15 @@
 
 ## Next action
 
-➡️ **S5b.4 — Probe-pipeline injection + proactive/reactive refresh + single-flight.**
-Wire the auth source into `CheckService.run_check`: when `monitor.auth_source_id`
-is set, load the `AuthSource` + cached `TokenState`, call `resolve_auth`
-(proactive: refresh on `NeedsRefresh`), `apply_injection` into the probe request,
-then probe. **Reactive:** if the response status ∈ `refresh_on_status` (default
-401/403), invalidate + refresh **once** + retry the probe **once** (no loops; a
-persistent 401 is one recorded failed `CheckResult`). Reuse `AuthTokenService`'s
-refresh for both, and **extend it for refresh-token reuse** (prefer the
-`refresh_token` grant when one is cached, fall back to a full login on failure).
-Add a **per-source single-flight lock** (`asyncio.Lock` keyed by source id) so a
-herd of due monitors triggers one login. The injected token must never land in a
-stored `CheckResult` sample (it stores none today — keep it that way; redact the
-injection target if samples are ever added). Integration-test via `FakeHttpProbe`:
-inject→probe, 401→one refresh+one retry, persistent-401→one failed check (no loop),
-refresh-token reuse + fallback. This is the decrypt-at-use case from D18.
+➡️ **Begin S6 — Scheduler runner.** Pure `select_due_monitors(monitors, now)` +
+`next_run_at(monitor, last_check)` (no I/O, `Clock` injected — densest unit
+tests), then the async worker loop (`python -m sentinel.infrastructure.scheduler`)
+that selects due enabled monitors, runs `CheckService.run_check` per monitor with
+jitter, and pings `HEARTBEAT_URL` each cycle when set (nothing when unset). Reuse
+the existing `CheckService` (auth injection already wired). Add the `just worker`
+recipe. Write the failing due-selection + next-run unit tests first; integration-
+test one scheduler cycle against fakes. See **sentinel-probe-and-assertions**
+(scheduler jitter/heartbeat) and `PLAN.md §5 S6`.
 
 ---
 
@@ -76,11 +65,11 @@ refresh-token reuse + fallback. This is the decrypt-at-use case from D18.
 - [x] **S4** Postman import
 - [x] **S5** Probe + assertions engine (S5.1 pure engine + S5.2 adapter/persist/endpoint)
 - [x] **S5a** Secret-at-rest (`SecretBox` / Fernet)
-- [ ] **S5b** Auth source / token provider _(split — PLAN D19)_
+- [x] **S5b** Auth source / token provider _(split — PLAN D19)_
   - [x] **S5b.1** Pure auth logic + value objects/entities
   - [x] **S5b.2** `AuthSource`/`TokenState` persistence (repo + `TokenStore` + migration)
   - [x] **S5b.3** Auth-source CRUD + manual-refresh API
-  - [ ] **S5b.4** Probe-pipeline injection + proactive/reactive refresh + single-flight
+  - [x] **S5b.4** Probe-pipeline injection + proactive/reactive refresh + single-flight
 - [ ] **S6** Scheduler runner
 - [ ] **S7** State, stats & history
 - [ ] **S7a** Rollups & long-window stats
@@ -109,6 +98,50 @@ refresh-token reuse + fallback. This is the decrypt-at-use case from D18.
 > Commit(s): <conventional commit subject lines>
 > Resume hint: <the very next concrete step>
 > ```
+
+### S5b.4 — Probe-pipeline injection + proactive/reactive refresh + single-flight  · 2026-06-27
+Done: A monitor linked to an auth source is now authenticated automatically.
+`CheckService.run_check` (deps now optionally carry `auth_sources` + an
+`AuthTokenService`) loads the `AuthSource` when `monitor.auth_source_id` is set,
+**proactively** resolves a token (`ensure_fresh`: `resolve_auth` → refresh on
+`NeedsRefresh`), `apply_injection`s it into the probe request, then probes. If the
+response status ∈ the source's `refresh_on_status` (default 401/403) **and** no
+refresh already happened this cycle, it **reactively** refreshes once + retries the
+probe once — capped at one refresh per check, no loops; a persistent 401 evaluates
+to one failed `CheckResult` (`error=assertion`). `AuthTokenService` gained
+`ensure_fresh(source, now) -> (plan, did_refresh)`, `force_refresh`, a per-source
+single-flight `asyncio.Lock` (double-checked inside the lock so a herd triggers one
+login), and a `_grant_plan` that tries the **OAuth2 refresh-token grant first when a
+refresh token is cached, falling back to the mode's primary grant** (full login) on
+failure. A wholly failed refresh records `last_refresh_error` and **keeps any
+existing valid token**. The injected token is decrypted at use (TokenStore) and
+never lands in a stored sample (`CheckResult` stores none) — the decrypt-at-use
+half of D18. `CheckService` was refactored into small helpers (`_inject`,
+`_maybe_reactive_retry`, `_send`, `_record`); the no-auth path is unchanged.
+Tests: `tests/integration/test_probe_auth_injection.py` (6 — cached-token-injected,
+missing→proactive-refresh→inject, 401→one-refresh+one-retry, persistent-401→one
+failed-check-no-loop, oauth refresh-token reuse, reuse-failure→client_credentials
+fallback) via `FakeHttpProbe` + in-memory fakes, calling `run_check` directly.
+Suite: 241 passed / 23 skipped (no DB); **264 with PG**. ruff + mypy strict clean.
+App boots (`/api/v1/health` 200).
+Decisions: **D20** (auth owned by `AuthTokenService`; one-refresh-per-check via
+`did_refresh`; single-flight double-check; `_grant_plan` reuse-then-fallback;
+failed refresh preserves a valid token; optional `CheckService` auth deps) added to
+PLAN §7.
+Files: `src/sentinel/application/auth_token_service.py` (rewritten:
+ensure_fresh/force_refresh/locks/grant-plan/reuse+fallback),
+`src/sentinel/application/check_service.py` (auth injection + reactive retry,
+refactored helpers), `src/sentinel/interface/api/deps.py` (wire auth into
+`get_check_service`), `tests/integration/test_probe_auth_injection.py` (new).
+Follow-ups / parked: `AuthSource.request` is required even for oauth modes (the
+builder ignores it; a stub url suffices) — could become optional for oauth sources
+(parked, minor wart). The single-flight lock is per-process (fine for the single
+worker; revisit if the scheduler ever runs multi-process). `cert_expiry_days` on the
+login request isn't asserted. Scheduler that drives `run_check` on a cadence is S6.
+Commit(s): `feat(auth): probe-pipeline token injection + proactive/reactive refresh + single-flight (S5b.4)`.
+Resume hint: start S6 — write failing unit tests for pure `select_due_monitors` +
+`next_run_at` (Clock injected) before the async scheduler worker, jitter, and the
+`HEARTBEAT_URL` ping; reuse `CheckService` (auth already wired). Add `just worker`.
 
 ### S5b.3 — Auth-source CRUD + manual-refresh API  · 2026-06-27
 Done: The auth source has a full API. `POST/GET/GET{id}/PATCH/DELETE

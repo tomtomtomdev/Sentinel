@@ -463,6 +463,29 @@ stable (after S7), against a mock server if needed.
   point of injection and never lands in a stored `CheckResult` (this is the
   decrypt-at-use case D18 deferred here).
 
+- **D20 — Auth lives in `AuthTokenService`; the probe pipeline caps a check at one
+  refresh.** All token behaviour — manual refresh, proactive (`ensure_fresh`) and
+  reactive (`force_refresh`) refresh, OAuth refresh-token reuse, and a per-source
+  single-flight `asyncio.Lock` — is owned by `AuthTokenService`; `CheckService`
+  only resolves+injects and decides the one reactive retry. **One refresh per
+  check:** `ensure_fresh` returns `(plan, did_refresh)` and the reactive path
+  (status ∈ `refresh_on_status`) fires only when `not did_refresh`, so a check
+  triggers at most one login + one retry — no loops; a persistent 401 evaluates to
+  a normal failed `CheckResult` (`error=assertion` via the default 2xx assertion).
+  **Single-flight:** `ensure_fresh` double-checks the cache inside the per-source
+  lock, so a herd of due monitors triggers one login and the rest reuse it.
+  **Refresh-token reuse:** `_grant_plan` returns an ordered list of token requests —
+  the `refresh_token` grant first when a refresh token is cached, then the mode's
+  primary grant as a fallback — and `_refresh_unlocked` tries them in order, so a
+  failed refresh-token grant falls back to a full login (SPEC §3.9). A refresh that
+  fails entirely is recorded as `last_refresh_error` and **preserves any existing
+  valid token** (a transient IdP blip never drops a working token). The injected
+  token is decrypted by the `TokenStore` and lives only in memory + the outbound
+  request; `CheckResult` stores no request/body sample, so it never lands in a
+  stored sample (the decrypt-at-use half of D18). `CheckService`'s `auth_sources`/
+  `auth` deps are optional, so probe tests without auth and the manual-check path
+  are unaffected.
+
 _Append new decisions here as `Dn — <decision>: <why>` when slices force a choice._
 
 ---

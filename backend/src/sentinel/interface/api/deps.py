@@ -88,4 +88,6 @@ def get_check_service() -> CheckService:
         results=SqlCheckResultRepository(factory),
         probe=get_http_probe(),
         clock=clock,
+        auth_sources=get_auth_source_repository(),
+        auth=get_auth_token_service(),
     )
