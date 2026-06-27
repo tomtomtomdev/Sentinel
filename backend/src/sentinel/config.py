@@ -14,6 +14,14 @@ class Settings(BaseSettings):
     # so rotation is prepend-a-key-and-redeploy. Empty until configured; see
     # `.env.example`. Never commit real keys.
     secret_key: str = ""
+    # Dead-man's switch: each scheduler cycle pings this URL (e.g. healthchecks.io).
+    # Off (no ping) when unset. See PLAN D8 / SPEC §6.
+    heartbeat_url: str = ""
+    # Scheduler runner tuning. The loop wakes every `poll_seconds` to re-select due
+    # monitors; due monitors are probed with at most `max_concurrency` in flight so
+    # one hung endpoint can't starve the rest (SPEC §3.3).
+    scheduler_poll_seconds: float = 5.0
+    scheduler_max_concurrency: int = 50
 
     def secret_key_ring(self) -> list[str]:
         """Parse `SECRET_KEY` into an ordered, whitespace-trimmed key ring,

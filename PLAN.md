@@ -486,6 +486,39 @@ stable (after S7), against a mock server if needed.
   `auth` deps are optional, so probe tests without auth and the manual-check path
   are unaffected.
 
+- **D21 — Scheduler state is an in-memory last-run map seeded from persisted
+  results; the runner is a thin loop over pure decisions reusing `CheckService`.**
+  S6 keeps the scheduling *decisions* pure in `domain/logic/scheduling.py`:
+  `select_due_monitors(monitors, now, last_run_by_id)` (enabled + never-run-or-due,
+  in order) and `next_run_at(monitor, last_run_at)` (`last_run + interval + jitter`).
+  **Jitter** (`jitter_seconds`) is **non-negative**, deterministic from the monitor
+  id (`int.from_bytes(id.bytes) % window`, no RNG/clock so tests assert exact
+  values), and bounded by `JITTER_FRACTION=0.1` of the interval — non-negativity
+  preserves SPEC §7's "not before `interval`" guarantee while de-bunching the herd.
+  **Skip-don't-backfill** falls out of boolean selection plus computing the next run
+  from the *actual* run time: a monitor is returned at most once per cycle no matter
+  how many ticks were missed. The async `SchedulerRunner`
+  (`infrastructure/scheduler.py`) is intentionally thin — list → `select_due` →
+  probe each due monitor via the **existing `CheckService.run_check`** (so auth
+  injection, assertions, and persistence are reused, not reimplemented) under an
+  `asyncio.Semaphore` (bounded concurrency, one hung endpoint can't starve the
+  rest), then `Heartbeat.ping()`. A single check that raises is logged and skipped
+  (its attempt time recorded to avoid a hot-loop) so the cycle **never crashes**;
+  the heartbeat fires every cycle even when nothing is due. **Schedule state is the
+  per-monitor last-run time, held in memory and seeded on startup from each
+  monitor's most recent `CheckResult.finished_at`** (`seed_schedule`), so a restart
+  resumes the cadence instead of re-probing everything at once (SPEC §6) — this
+  deliberately avoids adding a `last_check_at` column now (an explicit `MonitorState`
+  arrives in S7). New `Heartbeat` port + `NullHeartbeat`/`HttpxHeartbeat` adapters:
+  the dead-man's switch (PLAN D8) GETs `HEARTBEAT_URL` each cycle, **never raises**
+  (a watchdog outage can't crash the runner), and is a no-op when unset. The worker
+  is a **second composition root** living in `infrastructure` (`build_runner`); it
+  wires concrete adapters directly rather than importing `interface/api/deps.py`,
+  keeping the dependency rule intact (infrastructure never imports interface) at the
+  cost of a little wiring duplicated from `deps.py` (parked: extract a shared
+  composition module). Config gains `heartbeat_url`, `scheduler_poll_seconds`,
+  `scheduler_max_concurrency`.
+
 _Append new decisions here as `Dn — <decision>: <why>` when slices force a choice._
 
 ---

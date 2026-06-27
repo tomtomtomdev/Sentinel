@@ -134,6 +134,17 @@ class InMemoryTokenStore:
         return copy.deepcopy(token_state)
 
 
+class FakeHeartbeat:
+    """A `Heartbeat` that counts pings instead of hitting the network, so a
+    scheduler cycle can assert the dead-man's switch fired (SPEC §6)."""
+
+    def __init__(self) -> None:
+        self.pings = 0
+
+    async def ping(self) -> None:
+        self.pings += 1
+
+
 class FakeHttpProbe:
     """A scriptable `HttpProbe`. Returns a queued `ProbeResponse` (or raises a
     queued exception) per call, recording the requests it received. Lets the

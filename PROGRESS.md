@@ -20,39 +20,45 @@
 
 ## Current state
 
-- **Phase:** **S5b complete** — auth source / token provider (all four sub-slices,
-  PLAN D19+D20). A monitor can link an `AuthSource`; the probe pipeline injects its
-  token, refreshing **proactively** (missing/expired/within window) and
-  **reactively** (one refresh + one retry on a `refresh_on_status` code), capped at
-  one refresh per check (no loops). `AuthTokenService` owns all token behaviour —
-  manual/proactive/reactive refresh, **OAuth2 refresh-token reuse with fallback to a
-  full login**, and a per-source single-flight `asyncio.Lock`. Credentials + cached
-  tokens are encrypted at rest (`SecretBox`) and decrypted at use; the token never
-  appears in a response, log, or stored `CheckResult` sample. Full CRUD + manual
-  refresh API exists with credential redaction + metadata-only token status.
-- **Last green commit:** S5b.3 (`feat(auth): auth-source CRUD + manual-refresh…`);
-  S5b.4 staged.
-- **Test suite:** `just test` (no DB) → **241 passed, 23 skipped**. With
-  `TEST_DATABASE_URL=…/sentinel_test` → **264 passed**. New:
-  `tests/integration/test_probe_auth_injection.py` (6 — cached-inject, proactive
-  refresh, 401→one refresh+retry, persistent-401→one failed check, refresh-token
-  reuse, reuse-failure→full-login fallback).
-- **Schema/migrations:** head **`a7c3f1e9d2b4`** (unchanged since S5b.2).
+- **Phase:** **S6 complete** — scheduler runner (PLAN D21). A worker
+  (`python -m sentinel.infrastructure.scheduler` / `just worker`) loops over the
+  pure `select_due_monitors` decision: each cycle it lists monitors, selects the
+  **enabled, due** ones (per-monitor **jitter**, **skip-don't-backfill**), probes
+  each via the existing `CheckService.run_check` under a bounded-concurrency
+  semaphore, records the run time, and pings the **dead-man's-switch** `Heartbeat`
+  (`HEARTBEAT_URL`, no-op when unset) — every cycle, even when nothing is due. A
+  single failing check is logged + skipped so the cycle never crashes. Schedule
+  state is an in-memory last-run map **seeded on startup from each monitor's most
+  recent `CheckResult`** so a restart resumes the cadence rather than re-probing all
+  at once (no new `last_check_at` column — `MonitorState` is S7).
+- **Last green commit:** S5b.4 (`feat(auth): probe-pipeline token injection…`);
+  S6 staged.
+- **Test suite:** `just test` (no DB) → **264 passed, 23 skipped**. With
+  `TEST_DATABASE_URL=…/sentinel_test` → **287 passed** (no skips). New: `tests/unit/
+  domain/test_scheduling.py` (12 — jitter determinism/window/spread, next_run,
+  due-boundary/not-before/never-run/disabled/jitter-delay/gap-no-backfill/order),
+  `tests/integration/test_scheduler.py` (7 — cycle probes+records, disabled skipped,
+  heartbeat each cycle, heartbeat when idle, just-probed-not-due, seed-resumes-from-
+  results, one-failure-doesn't-abort), `test_scheduler_loop.py` (1 — run_forever
+  cycles then stops), `test_heartbeat.py` (3 — ping GETs URL, swallows errors, Null
+  inert).
+- **Schema/migrations:** head **`a7c3f1e9d2b4`** (unchanged — S6 added no tables).
 - **Deps:** unchanged.
-- **Config:** unchanged.
+- **Config:** **+`heartbeat_url`, `scheduler_poll_seconds`,
+  `scheduler_max_concurrency`** (see `.env.example` candidates).
 - **Deployed:** no.
 
 ## Next action
 
-➡️ **Begin S6 — Scheduler runner.** Pure `select_due_monitors(monitors, now)` +
-`next_run_at(monitor, last_check)` (no I/O, `Clock` injected — densest unit
-tests), then the async worker loop (`python -m sentinel.infrastructure.scheduler`)
-that selects due enabled monitors, runs `CheckService.run_check` per monitor with
-jitter, and pings `HEARTBEAT_URL` each cycle when set (nothing when unset). Reuse
-the existing `CheckService` (auth injection already wired). Add the `just worker`
-recipe. Write the failing due-selection + next-run unit tests first; integration-
-test one scheduler cycle against fakes. See **sentinel-probe-and-assertions**
-(scheduler jitter/heartbeat) and `PLAN.md §5 S6`.
+➡️ **Begin S7 — State, stats & history.** Add `MonitorState`; pure
+`derive_transition(state, latest_result, thresholds) -> StateTransition | None`
+(failure/recovery thresholds) and `compute_stats(results, window, now) -> Stats`
+(uptime % + latency percentiles over short windows, from raw `CheckResult`s — `now`
+injected, no I/O). Then `GET /monitors/{id}/results` (history; repo already has
+`list_for_monitor`), `GET /monitors/{id}/stats`, and the list `?include=summary`.
+Write failing transition-threshold + fixture-based stats unit tests first, then the
+endpoints. See **sentinel-architecture** (add-a-capability recipe) and `PLAN.md §5
+S7`. (Rollups/long-window stats are the separate S7a.)
 
 ---
 
@@ -70,7 +76,7 @@ test one scheduler cycle against fakes. See **sentinel-probe-and-assertions**
   - [x] **S5b.2** `AuthSource`/`TokenState` persistence (repo + `TokenStore` + migration)
   - [x] **S5b.3** Auth-source CRUD + manual-refresh API
   - [x] **S5b.4** Probe-pipeline injection + proactive/reactive refresh + single-flight
-- [ ] **S6** Scheduler runner
+- [x] **S6** Scheduler runner
 - [ ] **S7** State, stats & history
 - [ ] **S7a** Rollups & long-window stats
 - [ ] **S8** SSE live events
@@ -98,6 +104,73 @@ test one scheduler cycle against fakes. See **sentinel-probe-and-assertions**
 > Commit(s): <conventional commit subject lines>
 > Resume hint: <the very next concrete step>
 > ```
+
+### S6 — Scheduler runner  · 2026-06-27
+Done: The probe loop now runs on a cadence. A worker
+(`python -m sentinel.infrastructure.scheduler`, `just worker`) selects due enabled
+monitors and probes them automatically. Pure decisions live in
+`domain/logic/scheduling.py`: `select_due_monitors(monitors, now, last_run_by_id)`
+(enabled + never-run-or-`now >= next_run_at`, input order; disabled never selected),
+`next_run_at(monitor, last_run)` (`last_run + interval + jitter`), and
+`jitter_seconds(id, interval)` (deterministic per-monitor offset in
+`[0, interval*0.1)` from the id's bytes — no RNG/clock; **non-negative** so a check
+is never selected *before* its interval, satisfying SPEC §7 "not before"). The async
+`SchedulerRunner.run_cycle` lists monitors → `select_due` → probes each due one via
+the **reused `CheckService.run_check`** (auth injection + assertions + persistence
+all inherited) under an `asyncio.Semaphore` (bounded concurrency), records each run
+time, then pings the `Heartbeat` — **every cycle, even idle**. A check that raises
+is logged + skipped (attempt time recorded to avoid a hot-loop) so the cycle never
+crashes (SPEC §3.3). `run_forever` seeds then loops on `scheduler_poll_seconds`
+until a stop event (SIGINT/SIGTERM). **Skip-don't-backfill** is structural: boolean
+selection returns a monitor at most once per cycle and the next run is computed from
+the *actual* run time. Schedule state is an in-memory `last_run_by_id` map
+**seeded on startup from each monitor's most recent `CheckResult.finished_at`**
+(`seed_schedule`), so a restart resumes the cadence instead of re-probing all at
+once (SPEC §6) — no `last_check_at` column added (deferred to S7's `MonitorState`).
+New `Heartbeat` port (`domain/ports.py`) + `NullHeartbeat`/`HttpxHeartbeat`
+adapters (`infrastructure/heartbeat.py`): the dead-man's switch (PLAN D8) GETs
+`HEARTBEAT_URL` each cycle, **never raises** (a watchdog outage can't crash the
+runner), no-op when unset. The worker is a **second composition root**
+(`build_runner` in `infrastructure/scheduler.py`) wiring concrete adapters directly,
+not importing `interface/api/deps.py`, so the dependency rule holds.
+Tests: `tests/unit/domain/test_scheduling.py` (12 — jitter determinism/window/
+spread, next_run interval+jitter, due-at-boundary-inclusive, not-before, never-run,
+disabled-never, jitter-delays-due, gap→single (no backfill), mixed-set order);
+`tests/integration/test_scheduler.py` (7 — cycle probes+records both, disabled not
+probed, heartbeat each cycle, heartbeat-when-idle, just-probed-not-due-same-instant,
+seed-resumes-from-results→0 probes, one-failing-check-doesn't-abort);
+`test_scheduler_loop.py` (1 — `run_forever` cycles then stops on event);
+`test_heartbeat.py` (3 — ping GETs the URL via respx, swallows ConnectError, Null
+inert). Suite: **264 passed / 23 skipped** (no DB); **287 with PG** (no skips).
+ruff + mypy strict clean. Web app boots (`/api/v1/health` 200); worker module
+imports + `build_runner` constructs without a live DB.
+Decisions: **D21** (pure scheduling decisions; non-negative deterministic jitter;
+skip-don't-backfill via boolean selection; thin runner reusing `CheckService` with
+bounded concurrency + per-check failure isolation; in-memory last-run map seeded
+from persisted results, no `last_check_at` column yet; `Heartbeat` port + Null/Httpx
+adapters that never raise; worker as a second infra composition root) added to
+PLAN §7.
+Files: `src/sentinel/domain/logic/scheduling.py` (new),
+`src/sentinel/domain/ports.py` (+`Heartbeat`),
+`src/sentinel/infrastructure/heartbeat.py` (new),
+`src/sentinel/infrastructure/scheduler.py` (new — runner + `build_runner`/`main`),
+`src/sentinel/config.py` (+`heartbeat_url`/`scheduler_poll_seconds`/
+`scheduler_max_concurrency`), `tests/support/fakes.py` (+`FakeHeartbeat`),
+`tests/unit/domain/test_scheduling.py`, `tests/integration/{test_scheduler,
+test_scheduler_loop,test_heartbeat}.py` (new). (`just worker` recipe already
+existed.)
+Follow-ups / parked: extract a shared composition module so the worker
+(`build_runner`) and the API (`deps.py`) don't duplicate adapter wiring (minor
+drift risk). Multi-worker `SELECT … FOR UPDATE SKIP LOCKED` claim path is documented
+but not built (single-worker is v1). The heartbeat's per-process `HttpxHeartbeat`
+client is never explicitly closed in `run_forever` (process-lifetime). An explicit
+`last_check_at`/`MonitorState` (and state transitions/stats) is S7. `.env.example`
+not yet updated with the three new scheduler vars (add in S7/S13 docs pass).
+Commit(s): `feat(scheduler): due-selection + jitter + async runner with heartbeat (S6)`.
+Resume hint: start S7 — write failing unit tests for `derive_transition`
+(failure/recovery thresholds) and fixture-based `compute_stats` (uptime % +
+percentiles over a window, `now` injected) before `MonitorState`, the repo, and the
+`GET /results` / `GET /stats` / `?include=summary` endpoints.
 
 ### S5b.4 — Probe-pipeline injection + proactive/reactive refresh + single-flight  · 2026-06-27
 Done: A monitor linked to an auth source is now authenticated automatically.

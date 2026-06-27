@@ -79,6 +79,16 @@ class SecretBox(Protocol):
     def decrypt(self, token: bytes) -> str: ...
 
 
+class Heartbeat(Protocol):
+    """A dead-man's switch: the scheduler pings an external watchdog once per cycle
+    (SPEC §6). If the worker dies silently the watchdog stops hearing it and alerts,
+    so a crashed runner is never mistaken for "all green". A ping must never raise —
+    a watchdog hiccup can't be allowed to crash the runner — and is a no-op when no
+    `HEARTBEAT_URL` is configured."""
+
+    async def ping(self) -> None: ...
+
+
 class HttpProbe(Protocol):
     """Executes one outbound HTTP request and returns a `ProbeResponse`, capturing
     status, latency, a bounded body sample, size, and (on HTTPS) the TLS leaf
