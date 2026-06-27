@@ -20,46 +20,50 @@
 
 ## Current state
 
-- **Phase:** **S5b in progress — S5b.1 + S5b.2 complete.** S5b is split into four
-  green-ending sub-slices (PLAN D19): **S5b.1** pure logic ✅ · **S5b.2**
-  `AuthSource`/`TokenState` persistence ✅ · **S5b.3** CRUD + manual-refresh API
-  (redacted) · **S5b.4** probe-pipeline injection + proactive/reactive refresh +
-  single-flight. S5b.1 added `domain/logic/auth.py` (the five SPEC §3.9 pure
-  functions), the `AuthSource`/`TokenState` entities, the auth value objects/enums,
-  and `TokenExtractionError`. S5b.2 added the `AuthSourceRepository` + `TokenStore`
-  ports with in-memory fakes; `SqlAuthSourceRepository` + `SqlTokenStore` that
-  **encrypt at rest via `SecretBox`** (request body + secret request headers +
-  oauth `client_secret`/`username`/`password`; cached `token`/`refresh_token`),
-  decrypting on read; `auth_sources` + `token_states` tables + migration. Shared
-  at-rest header crypto promoted to `infrastructure/db/secret_mapping.py` (monitor
-  repo now uses it too — no behaviour change).
-- **Last green commit:** S5b.1 (`feat(auth): pure auth-source logic…`); S5b.2 staged.
-- **Test suite:** `just test` (no DB) → **218 passed, 23 skipped**. With
-  `TEST_DATABASE_URL=…/sentinel_test` → **241 passed** (verified locally; +35 vs S5b.1
-  baseline of 206-with-PG). New: `tests/integration/test_auth_source_repository.py`
-  (auth-source repo + token-store contract, memory + PG, incl. 2 PG-only
-  ciphertext-at-rest checks).
-- **Schema/migrations:** New head **`a7c3f1e9d2b4`** (`create auth_sources and
-  token_states tables`); `alembic upgrade head` verified clean from base on
-  `sentinel_test`.
+- **Phase:** **S5b in progress — S5b.1+S5b.2+S5b.3 complete.** S5b is split into
+  four green-ending sub-slices (PLAN D19): **S5b.1** pure logic ✅ · **S5b.2**
+  `AuthSource`/`TokenState` persistence ✅ · **S5b.3** CRUD + manual-refresh API ✅ ·
+  **S5b.4** probe-pipeline injection + proactive/reactive refresh + single-flight.
+  S5b.3 added the auth-source API surface: `AuthSourceService` (CRUD) +
+  `AuthTokenService` (refresh orchestration), DTOs, and the routes
+  `POST/GET/GET{id}/PATCH/DELETE /api/v1/auth-sources` + `POST
+  /api/v1/auth-sources/{id}/refresh`. Responses **redact every credential** (request
+  body + secret headers + oauth `client_secret`/`password`); `GET/{id}` and refresh
+  include a metadata-only `token_state` summary (`status` via the pure
+  `token_status`, `obtained_at`, `expires_at`, `last_refresh_error`) — **never the
+  token value**. Refresh builds the mode's token request → probes → `extract_token`
+  → saves the cached `TokenState`; a transport/extraction failure is recorded as
+  `status=error` (HTTP 200), keeping any previously valid token. `MonitorService`
+  now validates `auth_source_id` exists (→ 422). S5b.1/.2 before it: pure logic +
+  persistence.
+- **Last green commit:** S5b.2 (`feat(auth): AuthSource/TokenState persistence…`);
+  S5b.3 staged.
+- **Test suite:** `just test` (no DB) → **235 passed, 23 skipped**. With
+  `TEST_DATABASE_URL=…/sentinel_test` → **258 passed**. New:
+  `tests/integration/test_auth_source_api.py` (12 — CRUD + redaction + refresh
+  metadata-only + monitor-link validation) and 5 `token_status` unit tests.
+- **Schema/migrations:** head **`a7c3f1e9d2b4`** (unchanged since S5b.2).
 - **Deps:** unchanged.
-- **Config:** unchanged (`SECRET_KEY` key ring; lazy `SecretBox`).
+- **Config:** unchanged.
 - **Deployed:** no.
 
 ## Next action
 
-➡️ **S5b.3 — Auth-source CRUD + manual-refresh API.** Add `AuthSourceService`
-(application; wraps the repo) and the routes `POST/GET/GET{id}/PATCH/DELETE
-/api/v1/auth-sources`, plus `POST /api/v1/auth-sources/{id}/refresh` that
-orchestrates build→probe→`extract_token`→`TokenStore.save` and returns
-**metadata only** (`token_state` summary `{status, obtained_at, expires_at}` —
-never the token). Auth-source responses **redact** `request.body` + credential
-headers + oauth secrets (DTOs never carry secret values). Monitor create/patch
-validates that `auth_source_id` exists (→ 404/422). Wire the new repo/store/probe/
-clock in `deps.py`. Write the failing API tests first (via `dependency_overrides`
-with the in-memory fakes + `FakeHttpProbe`, mirroring `test_probe_check_api.py`):
-create→redacted response, refresh→metadata-only (no token leak), and the
-status field. The single-flight lock + reactive 401 retry are S5b.4.
+➡️ **S5b.4 — Probe-pipeline injection + proactive/reactive refresh + single-flight.**
+Wire the auth source into `CheckService.run_check`: when `monitor.auth_source_id`
+is set, load the `AuthSource` + cached `TokenState`, call `resolve_auth`
+(proactive: refresh on `NeedsRefresh`), `apply_injection` into the probe request,
+then probe. **Reactive:** if the response status ∈ `refresh_on_status` (default
+401/403), invalidate + refresh **once** + retry the probe **once** (no loops; a
+persistent 401 is one recorded failed `CheckResult`). Reuse `AuthTokenService`'s
+refresh for both, and **extend it for refresh-token reuse** (prefer the
+`refresh_token` grant when one is cached, fall back to a full login on failure).
+Add a **per-source single-flight lock** (`asyncio.Lock` keyed by source id) so a
+herd of due monitors triggers one login. The injected token must never land in a
+stored `CheckResult` sample (it stores none today — keep it that way; redact the
+injection target if samples are ever added). Integration-test via `FakeHttpProbe`:
+inject→probe, 401→one refresh+one retry, persistent-401→one failed check (no loop),
+refresh-token reuse + fallback. This is the decrypt-at-use case from D18.
 
 ---
 
@@ -75,7 +79,7 @@ status field. The single-flight lock + reactive 401 retry are S5b.4.
 - [ ] **S5b** Auth source / token provider _(split — PLAN D19)_
   - [x] **S5b.1** Pure auth logic + value objects/entities
   - [x] **S5b.2** `AuthSource`/`TokenState` persistence (repo + `TokenStore` + migration)
-  - [ ] **S5b.3** Auth-source CRUD + manual-refresh API
+  - [x] **S5b.3** Auth-source CRUD + manual-refresh API
   - [ ] **S5b.4** Probe-pipeline injection + proactive/reactive refresh + single-flight
 - [ ] **S6** Scheduler runner
 - [ ] **S7** State, stats & history
@@ -105,6 +109,61 @@ status field. The single-flight lock + reactive 401 retry are S5b.4.
 > Commit(s): <conventional commit subject lines>
 > Resume hint: <the very next concrete step>
 > ```
+
+### S5b.3 — Auth-source CRUD + manual-refresh API  · 2026-06-27
+Done: The auth source has a full API. `POST/GET/GET{id}/PATCH/DELETE
+/api/v1/auth-sources` (CRUD via new `AuthSourceService`) + `POST
+/api/v1/auth-sources/{id}/refresh`. **Every credential is redacted in responses**
+(SPEC §6): the login `request.body` → `••••`, secret request headers via the shared
+`redact()`, oauth `client_secret`/`password` → `••••` (`client_id`/`username` kept
+as identifiers). `GET/{id}` and refresh include a metadata-only `token_state`
+summary `{status, obtained_at, expires_at, last_refresh_error}` where `status` comes
+from the new pure `token_status(state, now) -> TokenStatus` (valid/expired/error/
+none) — **the token value is never serialized**. The refresh use case
+(`AuthTokenService`) builds the mode's token request (custom → `build_token_request`;
+oauth2_client_credentials/password → `build_oauth_token_request`; oauth2_refresh →
+refresh-token grant from the cached token), probes via `HttpProbe`, runs
+`extract_token`, and saves the cached `TokenState`; a `ProbeError`/`TokenExtractionError`
+is **recorded** as `last_refresh_error` (→ `status=error`, HTTP 200) and **keeps any
+previously valid token** (no drop on a transient IdP blip). `MonitorService` gained
+an optional `AuthSourceRepository` and now rejects a monitor whose `auth_source_id`
+doesn't exist (`ValidationError` → 422); wired in `deps.py` (existing monitor unit
+tests pass `None` → validation skipped, still green). New `TokenStatus` enum.
+Tests: `tests/integration/test_auth_source_api.py` (12 — create-redacts-but-stores-
+full, oauth client_secret redaction, list, get+token_state=none, get-404, patch,
+delete→404, refresh→metadata-only/no-token-leak/cached, refresh-failure→error-status,
+refresh-404, monitor-rejects-unknown-source, monitor-accepts-existing-source) via
+`dependency_overrides` with in-memory fakes + `FakeHttpProbe`; `test_auth.py` +5
+`token_status` cases. Suite: 235 passed / 23 skipped (no DB); **258 with PG**. ruff
+(incl. fixing an over-broad `"u" in text` test assertion → exact credential-payload
+check; replaced a production `assert` with a guard) + mypy strict clean. App boots.
+Decisions: none new (under D19). Notable choices: refresh failures are HTTP 200 with
+`status=error` (consistent with §3.3 "transport problems are results"); a failed
+refresh preserves an existing valid token; `last_refresh_error` (non-secret) is
+included in the metadata alongside the skill's `{status, obtained_at, expires_at}`;
+`client_id`/`username` shown, `client_secret`/`password`/body masked.
+Files: `src/sentinel/application/auth_source_service.py` (new),
+`src/sentinel/application/auth_token_service.py` (new),
+`src/sentinel/application/monitor_service.py` (+auth_source_id validation),
+`src/sentinel/domain/value_objects.py` (+`TokenStatus`),
+`src/sentinel/domain/logic/auth.py` (+`token_status`),
+`src/sentinel/interface/api/schemas.py` (+auth-source DTOs + redaction helpers),
+`src/sentinel/interface/api/auth_sources.py` (new routes),
+`src/sentinel/interface/api/deps.py` (+repo/store/services wiring),
+`src/sentinel/interface/main.py` (register router),
+`tests/integration/test_auth_source_api.py` (new),
+`tests/unit/domain/test_auth.py` (+token_status).
+Follow-ups / parked: probe-pipeline injection + proactive/reactive refresh +
+single-flight + refresh-token reuse is S5b.4. List does not include `token_state`
+(kept cheap; GET/{id} does). Manual refresh uses the primary grant per mode (reuse
+optimisation is S5b.4). `value_template`/`refresh_on_status` not deeply validated
+beyond shape.
+Commit(s): `feat(auth): auth-source CRUD + manual-refresh API, redacted (S5b.3)`.
+Resume hint: start S5b.4 — write the failing `CheckService`-with-auth integration
+tests (inject→probe; 401→one refresh+one retry; persistent-401→one failed check;
+refresh-token reuse+fallback) before wiring `resolve_auth`/`apply_injection` into
+`run_check`, extending `AuthTokenService` for refresh-token reuse, and adding the
+per-source `asyncio.Lock` single-flight.
 
 ### S5b.2 — `AuthSource`/`TokenState` persistence (repo + `TokenStore` + migration)  · 2026-06-27
 Done: The auth source persists. New `AuthSourceRepository` (add/get/list/update/

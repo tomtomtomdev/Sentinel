@@ -36,6 +36,7 @@ from sentinel.domain.value_objects import (
     ProbeResponse,
     Token,
     TokenExtractor,
+    TokenStatus,
 )
 
 _FORM_CONTENT_TYPE = "application/x-www-form-urlencoded"
@@ -136,6 +137,19 @@ def apply_injection(request: ProbeRequest, plan: InjectionPlan) -> ProbeRequest:
     if not isinstance(data, dict):
         raise TokenExtractionError("body injection requires a JSON object request body")
     return replace(request, body=json.dumps({**data, plan.injection.name: value}))
+
+
+def token_status(token_state: TokenState | None, now: datetime) -> TokenStatus:
+    """The metadata-only status of a cached token (SPEC §3.9), for API responses.
+    A usable token is `valid`; a token past its expiry is `expired`; no usable
+    token with a recorded failure is `error`; otherwise `none`."""
+    if token_state is None:
+        return TokenStatus.NONE
+    if token_state.token:
+        if token_state.expires_at is not None and now >= token_state.expires_at:
+            return TokenStatus.EXPIRED
+        return TokenStatus.VALID
+    return TokenStatus.ERROR if token_state.last_refresh_error else TokenStatus.NONE
 
 
 def _load_json(text: str | None) -> Any:

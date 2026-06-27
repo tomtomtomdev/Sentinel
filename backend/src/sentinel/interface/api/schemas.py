@@ -15,20 +15,37 @@ from pydantic import BaseModel, Field
 
 from sentinel.domain.entities import (
     DEFAULT_INTERVAL_SECONDS,
+    DEFAULT_REFRESH_BEFORE_EXPIRY_SECONDS,
+    DEFAULT_REFRESH_ON_STATUS,
     DEFAULT_TIMEOUT_SECONDS,
+    DEFAULT_TOKEN_TYPE,
     MIN_THRESHOLD,
+    AuthSource,
     CheckResult,
     Monitor,
+    TokenState,
 )
-from sentinel.domain.logic.redaction import redact
+from sentinel.domain.logic.auth import token_status
+from sentinel.domain.logic.redaction import MASK, redact
 from sentinel.domain.value_objects import (
     Assertion,
     Auth,
+    AuthSourceMode,
     AuthType,
     BodyKind,
+    ClientAuth,
     ErrorKind,
+    ExpiryKind,
+    ExpirySpec,
+    ExtractorKind,
     HttpMethod,
+    Injection,
+    InjectionTarget,
     MonitorDraft,
+    OAuthConfig,
+    ProbeRequest,
+    TokenExtractor,
+    TokenStatus,
 )
 
 
@@ -271,3 +288,238 @@ class CheckResultResponse(BaseModel):
                 for a in result.assertion_results
             ],
         )
+
+
+# --- Auth source (SPEC §3.9, §5) --------------------------------------------
+
+
+class ProbeRequestDTO(BaseModel):
+    """The auth source's stored login request. In responses the `body`
+    (credentials) and secret headers are redacted; in requests they carry the
+    real values to persist (encrypted at rest)."""
+
+    method: HttpMethod = HttpMethod.GET
+    url: str
+    headers: dict[str, str] = Field(default_factory=dict)
+    query_params: dict[str, str] = Field(default_factory=dict)
+    body: str | None = None
+
+    def to_value(self) -> ProbeRequest:
+        return ProbeRequest(
+            method=self.method,
+            url=self.url,
+            headers=dict(self.headers),
+            query_params=dict(self.query_params),
+            body=self.body,
+        )
+
+
+class OAuthConfigDTO(BaseModel):
+    token_url: str
+    client_id: str
+    client_secret: str | None = None
+    scope: str | None = None
+    client_auth: ClientAuth = ClientAuth.BODY
+    username: str | None = None
+    password: str | None = None
+
+    def to_value(self) -> OAuthConfig:
+        return OAuthConfig(
+            token_url=self.token_url,
+            client_id=self.client_id,
+            client_secret=self.client_secret,
+            scope=self.scope,
+            client_auth=self.client_auth,
+            username=self.username,
+            password=self.password,
+        )
+
+
+class TokenExtractorDTO(BaseModel):
+    kind: ExtractorKind
+    expr: str
+
+
+class ExpirySpecDTO(BaseModel):
+    kind: ExpiryKind
+    value: int | str
+
+
+class InjectionDTO(BaseModel):
+    target: InjectionTarget
+    name: str
+    value_template: str = "{token_type} {token}"
+
+
+class TokenStateSummary(BaseModel):
+    """Metadata-only view of a cached token (SPEC §3.9). Never carries the token
+    value — only its derived `status` and timing."""
+
+    status: TokenStatus
+    obtained_at: datetime | None
+    expires_at: datetime | None
+    last_refresh_error: str | None
+
+    @classmethod
+    def from_state(cls, state: TokenState | None, now: datetime) -> TokenStateSummary:
+        return cls(
+            status=token_status(state, now),
+            obtained_at=state.obtained_at if state else None,
+            expires_at=state.expires_at if state else None,
+            last_refresh_error=state.last_refresh_error if state else None,
+        )
+
+
+class AuthSourceCreate(BaseModel):
+    """Request body for POST /auth-sources. Shape validation only; semantic
+    invariants (e.g. oauth required for oauth2_* modes) are enforced by the
+    `AuthSource` entity and surface as a `validation_error`."""
+
+    name: str
+    mode: AuthSourceMode = AuthSourceMode.CUSTOM
+    request: ProbeRequestDTO
+    oauth: OAuthConfigDTO | None = None
+    extractor: TokenExtractorDTO
+    expiry: ExpirySpecDTO | None = None
+    token_type: str = DEFAULT_TOKEN_TYPE
+    injection: InjectionDTO
+    refresh_before_expiry_seconds: int = DEFAULT_REFRESH_BEFORE_EXPIRY_SECONDS
+    refresh_on_status: list[int] = Field(default_factory=lambda: list(DEFAULT_REFRESH_ON_STATUS))
+    enabled: bool = True
+
+    def to_entity(self) -> AuthSource:
+        return AuthSource(
+            name=self.name,
+            mode=self.mode,
+            request=self.request.to_value(),
+            oauth=self.oauth.to_value() if self.oauth else None,
+            extractor=TokenExtractor(kind=self.extractor.kind, expr=self.extractor.expr),
+            expiry=ExpirySpec(kind=self.expiry.kind, value=self.expiry.value)
+            if self.expiry
+            else None,
+            token_type=self.token_type,
+            injection=Injection(
+                target=self.injection.target,
+                name=self.injection.name,
+                value_template=self.injection.value_template,
+            ),
+            refresh_before_expiry_seconds=self.refresh_before_expiry_seconds,
+            refresh_on_status=list(self.refresh_on_status),
+            enabled=self.enabled,
+        )
+
+
+class AuthSourceUpdate(BaseModel):
+    """Partial update for PATCH /auth-sources/{id}. Reconstruction re-runs the
+    entity invariants, so an invalid patch raises ValidationError → 422."""
+
+    name: str | None = None
+    mode: AuthSourceMode | None = None
+    request: ProbeRequestDTO | None = None
+    oauth: OAuthConfigDTO | None = None
+    extractor: TokenExtractorDTO | None = None
+    expiry: ExpirySpecDTO | None = None
+    token_type: str | None = None
+    injection: InjectionDTO | None = None
+    refresh_before_expiry_seconds: int | None = None
+    refresh_on_status: list[int] | None = None
+    enabled: bool | None = None
+
+    def apply_to(self, existing: AuthSource) -> AuthSource:
+        changes: dict[str, Any] = {}
+        for name in self.model_fields_set:
+            value = getattr(self, name)
+            if name == "request":
+                changes["request"] = value.to_value()
+            elif name == "oauth":
+                changes["oauth"] = value.to_value() if value is not None else None
+            elif name == "extractor":
+                changes["extractor"] = TokenExtractor(kind=value.kind, expr=value.expr)
+            elif name == "expiry":
+                changes["expiry"] = (
+                    ExpirySpec(kind=value.kind, value=value.value) if value is not None else None
+                )
+            elif name == "injection":
+                changes["injection"] = Injection(
+                    target=value.target, name=value.name, value_template=value.value_template
+                )
+            elif name == "mode":
+                changes["mode"] = AuthSourceMode(value)
+            else:
+                changes[name] = value
+        return replace(existing, **changes)
+
+
+class AuthSourceResponse(BaseModel):
+    """Full auth source with every credential redacted (SPEC §3.9, §6): the
+    request body and secret headers are masked, and oauth `client_secret`/
+    `password` are masked. The token value is never present; an optional
+    `token_state` carries metadata only."""
+
+    id: UUID
+    name: str
+    mode: AuthSourceMode
+    request: ProbeRequestDTO
+    oauth: OAuthConfigDTO | None
+    extractor: TokenExtractorDTO
+    expiry: ExpirySpecDTO | None
+    token_type: str
+    injection: InjectionDTO
+    refresh_before_expiry_seconds: int
+    refresh_on_status: list[int]
+    enabled: bool
+    created_at: datetime | None
+    updated_at: datetime | None
+    token_state: TokenStateSummary | None = None
+
+    @classmethod
+    def from_entity(
+        cls, source: AuthSource, token_state: TokenStateSummary | None = None
+    ) -> AuthSourceResponse:
+        return cls(
+            id=source.id,
+            name=source.name,
+            mode=source.mode,
+            request=_redact_request_dto(source.request),
+            oauth=_redact_oauth_dto(source.oauth),
+            extractor=TokenExtractorDTO(kind=source.extractor.kind, expr=source.extractor.expr),
+            expiry=ExpirySpecDTO(kind=source.expiry.kind, value=source.expiry.value)
+            if source.expiry
+            else None,
+            token_type=source.token_type,
+            injection=InjectionDTO(
+                target=source.injection.target,
+                name=source.injection.name,
+                value_template=source.injection.value_template,
+            ),
+            refresh_before_expiry_seconds=source.refresh_before_expiry_seconds,
+            refresh_on_status=list(source.refresh_on_status),
+            enabled=source.enabled,
+            created_at=source.created_at,
+            updated_at=source.updated_at,
+            token_state=token_state,
+        )
+
+
+def _redact_request_dto(req: ProbeRequest) -> ProbeRequestDTO:
+    return ProbeRequestDTO(
+        method=req.method,
+        url=req.url,
+        headers=redact(req.headers),
+        query_params=dict(req.query_params),
+        body=MASK if req.body else None,
+    )
+
+
+def _redact_oauth_dto(oauth: OAuthConfig | None) -> OAuthConfigDTO | None:
+    if oauth is None:
+        return None
+    return OAuthConfigDTO(
+        token_url=oauth.token_url,
+        client_id=oauth.client_id,
+        client_secret=MASK if oauth.client_secret else None,
+        scope=oauth.scope,
+        client_auth=oauth.client_auth,
+        username=oauth.username,
+        password=MASK if oauth.password else None,
+    )

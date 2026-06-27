@@ -8,16 +8,28 @@ from __future__ import annotations
 from uuid import UUID
 
 from sentinel.domain.entities import Monitor
-from sentinel.domain.errors import NotFoundError
-from sentinel.domain.ports import MonitorRepository
+from sentinel.domain.errors import NotFoundError, ValidationError
+from sentinel.domain.ports import AuthSourceRepository, MonitorRepository
 
 
 class MonitorService:
-    def __init__(self, repository: MonitorRepository) -> None:
+    def __init__(
+        self, repository: MonitorRepository, auth_sources: AuthSourceRepository | None = None
+    ) -> None:
         self._repository = repository
+        self._auth_sources = auth_sources
 
     async def create(self, monitor: Monitor) -> Monitor:
+        await self._validate_auth_source(monitor)
         return await self._repository.add(monitor)
+
+    async def _validate_auth_source(self, monitor: Monitor) -> None:
+        """A monitor may only link to an existing auth source (SPEC §3.9). When no
+        auth-source repo is wired (e.g. some unit tests), validation is skipped."""
+        if monitor.auth_source_id is None or self._auth_sources is None:
+            return
+        if await self._auth_sources.get(monitor.auth_source_id) is None:
+            raise ValidationError(f"auth_source_id {monitor.auth_source_id} does not exist")
 
     async def list(self) -> list[Monitor]:
         return await self._repository.list()
@@ -29,6 +41,7 @@ class MonitorService:
         return monitor
 
     async def update(self, monitor: Monitor) -> Monitor:
+        await self._validate_auth_source(monitor)
         try:
             return await self._repository.update(monitor)
         except LookupError as exc:

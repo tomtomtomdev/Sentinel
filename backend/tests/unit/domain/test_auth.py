@@ -21,6 +21,7 @@ from sentinel.domain.logic.auth import (
     build_token_request,
     extract_token,
     resolve_auth,
+    token_status,
 )
 from sentinel.domain.value_objects import (
     AuthSourceMode,
@@ -38,6 +39,7 @@ from sentinel.domain.value_objects import (
     ProbeRequest,
     ProbeResponse,
     TokenExtractor,
+    TokenStatus,
 )
 
 NOW = datetime(2026, 6, 27, 12, 0, tzinfo=UTC)
@@ -392,3 +394,29 @@ def test_oauth_mode_requires_oauth_config() -> None:
 
 def test_custom_mode_allows_no_oauth() -> None:
     assert make_source(mode=AuthSourceMode.CUSTOM, oauth=None).oauth is None
+
+
+# ------------------------------------------------------------------ token_status
+
+
+def test_token_status_none_when_no_state() -> None:
+    assert token_status(None, NOW) is TokenStatus.NONE
+
+
+def test_token_status_valid_for_unexpired_token() -> None:
+    ts = token_state(expires_at=NOW + timedelta(minutes=5))
+    assert token_status(ts, NOW) is TokenStatus.VALID
+
+
+def test_token_status_valid_when_no_expiry() -> None:
+    assert token_status(token_state(expires_at=None), NOW) is TokenStatus.VALID
+
+
+def test_token_status_expired_when_past_expiry() -> None:
+    ts = token_state(expires_at=NOW - timedelta(seconds=1))
+    assert token_status(ts, NOW) is TokenStatus.EXPIRED
+
+
+def test_token_status_error_when_no_token_but_error_recorded() -> None:
+    ts = token_state(token="", last_refresh_error="login failed")
+    assert token_status(ts, NOW) is TokenStatus.ERROR

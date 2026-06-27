@@ -245,3 +245,13 @@ class NeedsRefresh:
     inside the proactive refresh window and must be regenerated first."""
 
     reason: str
+
+
+class TokenStatus(StrEnum):
+    """The metadata-only health of an auth source's cached token (SPEC §3.9). Used
+    in API responses — the token value itself is never returned."""
+
+    VALID = "valid"
+    EXPIRED = "expired"
+    ERROR = "error"
+    NONE = "none"
