@@ -54,3 +54,44 @@ class CheckResultRow(SQLModel, table=True):
     success: bool
     error: str | None = Field(default=None)
     assertion_results: list[Any] = Field(sa_column=Column(JSONB, nullable=False))
+
+
+class AuthSourceRow(SQLModel, table=True):
+    """Auth source (SPEC §3.9). `request` and `oauth` are JSONB; the secret values
+    inside them (request body, secret headers, oauth client_secret/username/
+    password) are stored encrypted by the repository."""
+
+    __tablename__ = "auth_sources"
+
+    id: uuid.UUID = Field(primary_key=True)
+    name: str
+    mode: str
+    request: dict[str, Any] = Field(sa_column=Column(JSONB, nullable=False))
+    oauth: dict[str, Any] | None = Field(default=None, sa_column=Column(JSONB, nullable=True))
+    extractor: dict[str, Any] = Field(sa_column=Column(JSONB, nullable=False))
+    expiry: dict[str, Any] | None = Field(default=None, sa_column=Column(JSONB, nullable=True))
+    token_type: str
+    injection: dict[str, Any] = Field(sa_column=Column(JSONB, nullable=False))
+    refresh_before_expiry_seconds: int
+    refresh_on_status: list[Any] = Field(sa_column=Column(JSONB, nullable=False))
+    enabled: bool
+    created_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
+    updated_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
+
+
+class TokenStateRow(SQLModel, table=True):
+    """The single cached token per auth source (SPEC §3.9, §4). `token` and
+    `refresh_token` are stored encrypted. Keyed by `auth_source_id` — one row per
+    source."""
+
+    __tablename__ = "token_states"
+
+    auth_source_id: uuid.UUID = Field(primary_key=True)
+    token: str
+    refresh_token: str | None = Field(default=None)
+    token_type: str
+    obtained_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
+    expires_at: datetime | None = Field(
+        default=None, sa_column=Column(DateTime(timezone=True), nullable=True)
+    )
+    last_refresh_error: str | None = Field(default=None)

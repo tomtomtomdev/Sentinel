@@ -1,0 +1,36 @@
+"""Shared at-rest encryption helpers for the SQL repositories (SPEC §6). Secret
+values are stored as Fernet tokens — ASCII base64 strings — in JSONB columns, so
+they round-trip as plain strings. Which header names are secret is decided by the
+single `is_secret_header` classifier, the same one that drives API redaction, so
+encryption and redaction can never drift (PLAN D18)."""
+
+from __future__ import annotations
+
+from sentinel.domain.logic.redaction import is_secret_header
+from sentinel.domain.ports import SecretBox
+
+
+def encrypt_value(value: str, secret_box: SecretBox) -> str:
+    """Encrypt a single secret value to its ASCII Fernet-token string."""
+    return secret_box.encrypt(value).decode("ascii")
+
+
+def decrypt_value(token: str, secret_box: SecretBox) -> str:
+    """Inverse of `encrypt_value`."""
+    return secret_box.decrypt(token.encode("ascii"))
+
+
+def encrypt_secret_headers(headers: dict[str, str], secret_box: SecretBox) -> dict[str, str]:
+    """Encrypt secret-bearing header values for storage; pass others through."""
+    return {
+        name: (encrypt_value(value, secret_box) if is_secret_header(name) else value)
+        for name, value in headers.items()
+    }
+
+
+def decrypt_secret_headers(headers: dict[str, str], secret_box: SecretBox) -> dict[str, str]:
+    """Inverse of `encrypt_secret_headers` — decrypt secret values on read."""
+    return {
+        name: (decrypt_value(value, secret_box) if is_secret_header(name) else value)
+        for name, value in headers.items()
+    }

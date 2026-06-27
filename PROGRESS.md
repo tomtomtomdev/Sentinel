@@ -20,40 +20,46 @@
 
 ## Current state
 
-- **Phase:** **S5b in progress — S5b.1 complete** (pure auth-source logic). S5b is
-  split into four green-ending sub-slices (PLAN D19): **S5b.1** pure logic ✅ ·
-  **S5b.2** `AuthSource`/`TokenState` persistence (ports/fakes/rows/migration/SQL
-  repos+`SecretBox`) · **S5b.3** CRUD + manual-refresh API (redacted) · **S5b.4**
-  probe-pipeline injection + proactive/reactive refresh + single-flight. S5b.1
-  added `domain/logic/auth.py` with the five SPEC §3.9 functions
-  (`build_token_request`, `build_oauth_token_request`, `extract_token`,
-  `resolve_auth`, `apply_injection`) — all pure, no I/O, `now` injected — plus the
-  `AuthSource`/`TokenState` entities, the auth value objects (`TokenExtractor`,
-  `ExpirySpec`, `Injection`, `OAuthConfig`, `Token`, `InjectionPlan`,
-  `NeedsRefresh`, + enums), and `TokenExtractionError`. S5a before it: secret-at-rest
-  (`SecretBox`/Fernet at the repo boundary).
-- **Last green commit:** S5a (`feat(security): encrypt monitor header secrets…`);
-  S5b.1 staged for commit (see detailed log).
-- **Test suite:** `just test` (no DB) → **208 passed, 11 skipped** (+33 from S5b.1,
-  all pure unit tests in `tests/unit/domain/test_auth.py`). PG-param skips unchanged.
-- **Schema/migrations:** Alembic head unchanged (`533b92f6…`). **No migration yet** —
-  S5b.2 adds the `auth_sources` + `token_states` tables.
-- **Deps:** unchanged (`cryptography>=43` runtime, `respx` dev).
+- **Phase:** **S5b in progress — S5b.1 + S5b.2 complete.** S5b is split into four
+  green-ending sub-slices (PLAN D19): **S5b.1** pure logic ✅ · **S5b.2**
+  `AuthSource`/`TokenState` persistence ✅ · **S5b.3** CRUD + manual-refresh API
+  (redacted) · **S5b.4** probe-pipeline injection + proactive/reactive refresh +
+  single-flight. S5b.1 added `domain/logic/auth.py` (the five SPEC §3.9 pure
+  functions), the `AuthSource`/`TokenState` entities, the auth value objects/enums,
+  and `TokenExtractionError`. S5b.2 added the `AuthSourceRepository` + `TokenStore`
+  ports with in-memory fakes; `SqlAuthSourceRepository` + `SqlTokenStore` that
+  **encrypt at rest via `SecretBox`** (request body + secret request headers +
+  oauth `client_secret`/`username`/`password`; cached `token`/`refresh_token`),
+  decrypting on read; `auth_sources` + `token_states` tables + migration. Shared
+  at-rest header crypto promoted to `infrastructure/db/secret_mapping.py` (monitor
+  repo now uses it too — no behaviour change).
+- **Last green commit:** S5b.1 (`feat(auth): pure auth-source logic…`); S5b.2 staged.
+- **Test suite:** `just test` (no DB) → **218 passed, 23 skipped**. With
+  `TEST_DATABASE_URL=…/sentinel_test` → **241 passed** (verified locally; +35 vs S5b.1
+  baseline of 206-with-PG). New: `tests/integration/test_auth_source_repository.py`
+  (auth-source repo + token-store contract, memory + PG, incl. 2 PG-only
+  ciphertext-at-rest checks).
+- **Schema/migrations:** New head **`a7c3f1e9d2b4`** (`create auth_sources and
+  token_states tables`); `alembic upgrade head` verified clean from base on
+  `sentinel_test`.
+- **Deps:** unchanged.
 - **Config:** unchanged (`SECRET_KEY` key ring; lazy `SecretBox`).
 - **Deployed:** no.
 
 ## Next action
 
-➡️ **S5b.2 — `AuthSource`/`TokenState` persistence.** Add `AuthSourceRepository`
-and `TokenStore` ports (load/save the single cached `TokenState` per source) with
-in-memory fakes; `AuthSourceRow` + `TokenStateRow` SQLModel tables + an Alembic
-migration; `SqlAuthSourceRepository` + `SqlTokenStore` that **encrypt via
-`SecretBox`** the request-body credentials / `oauth.client_secret`/`username`/
-`password` and the cached `token`/`refresh_token` at rest (decrypt on read).
-Write the failing repo-contract test first (memory + PG, mirroring
-`test_monitor_repository.py`), asserting a full round-trip and that the raw row
-holds ciphertext (not the plaintext token). The monitors table already has the
-`auth_source_id` column. Read **sentinel-security** for the at-rest rules.
+➡️ **S5b.3 — Auth-source CRUD + manual-refresh API.** Add `AuthSourceService`
+(application; wraps the repo) and the routes `POST/GET/GET{id}/PATCH/DELETE
+/api/v1/auth-sources`, plus `POST /api/v1/auth-sources/{id}/refresh` that
+orchestrates build→probe→`extract_token`→`TokenStore.save` and returns
+**metadata only** (`token_state` summary `{status, obtained_at, expires_at}` —
+never the token). Auth-source responses **redact** `request.body` + credential
+headers + oauth secrets (DTOs never carry secret values). Monitor create/patch
+validates that `auth_source_id` exists (→ 404/422). Wire the new repo/store/probe/
+clock in `deps.py`. Write the failing API tests first (via `dependency_overrides`
+with the in-memory fakes + `FakeHttpProbe`, mirroring `test_probe_check_api.py`):
+create→redacted response, refresh→metadata-only (no token leak), and the
+status field. The single-flight lock + reactive 401 retry are S5b.4.
 
 ---
 
@@ -68,7 +74,7 @@ holds ciphertext (not the plaintext token). The monitors table already has the
 - [x] **S5a** Secret-at-rest (`SecretBox` / Fernet)
 - [ ] **S5b** Auth source / token provider _(split — PLAN D19)_
   - [x] **S5b.1** Pure auth logic + value objects/entities
-  - [ ] **S5b.2** `AuthSource`/`TokenState` persistence (repo + `TokenStore` + migration)
+  - [x] **S5b.2** `AuthSource`/`TokenState` persistence (repo + `TokenStore` + migration)
   - [ ] **S5b.3** Auth-source CRUD + manual-refresh API
   - [ ] **S5b.4** Probe-pipeline injection + proactive/reactive refresh + single-flight
 - [ ] **S6** Scheduler runner
@@ -99,6 +105,53 @@ holds ciphertext (not the plaintext token). The monitors table already has the
 > Commit(s): <conventional commit subject lines>
 > Resume hint: <the very next concrete step>
 > ```
+
+### S5b.2 — `AuthSource`/`TokenState` persistence (repo + `TokenStore` + migration)  · 2026-06-27
+Done: The auth source persists. New `AuthSourceRepository` (add/get/list/update/
+delete) and `TokenStore` (load/`save`-as-upsert — one cached `TokenState` row per
+source) ports with in-memory fakes (`InMemoryAuthSourceRepository`,
+`InMemoryTokenStore`). `SqlAuthSourceRepository` maps `AuthSource`↔`AuthSourceRow`
+(request/oauth/extractor/expiry/injection as JSONB; mode/token_type/status as
+scalars) and `SqlTokenStore` maps `TokenState`↔`TokenStateRow`. **At-rest
+encryption via the injected `SecretBox`** (SPEC §6, PLAN D18): the login `request`
+body (= credentials), secret-bearing request headers, and oauth `client_secret`/
+`username`/`password` are ciphertext in the row; the cached `token`/`refresh_token`
+likewise — all decrypted on read so the entity carries plaintext and the domain/
+application layers stay crypto-free. The shared header crypto was promoted from the
+monitor repo's private `_encrypt_headers`/`_decrypt_headers` into
+`infrastructure/db/secret_mapping.py` (`encrypt_value`/`decrypt_value`/
+`encrypt_secret_headers`/`decrypt_secret_headers`); the monitor repo now imports it
+(no behaviour change). New `auth_sources` + `token_states` tables + Alembic
+migration `a7c3f1e9d2b4` (head). The monitors table already had `auth_source_id`.
+Tests: `tests/integration/test_auth_source_repository.py` (memory + PG contract —
+custom + oauth round-trip, timestamps, get-missing, list, update-preserves-created_at,
+delete; token-store save/load/overwrite/load-missing; **2 PG-only** ciphertext-at-
+rest checks: request body + oauth client_secret, and token + refresh_token).
+`test_monitor_row_mapping.py` repointed at the shared module. Suite: 218 passed /
+23 skipped (no DB); **241 passed with PG** (`sentinel_test`). `alembic upgrade head`
+verified clean from base. ruff + mypy strict clean. App boots (`/api/v1/health` 200).
+Decisions: none new (under D18/D19 — at-rest encryption stays at the repo boundary,
+shared classifier; TokenStore decrypts the token on `load`, so the application layer
+never touches `SecretBox`).
+Files: `src/sentinel/domain/ports.py` (+`AuthSourceRepository`,`TokenStore`),
+`src/sentinel/infrastructure/db/secret_mapping.py` (new, shared crypto),
+`src/sentinel/infrastructure/db/monitor_repository.py` (use shared crypto),
+`src/sentinel/infrastructure/db/models.py` (+`AuthSourceRow`,`TokenStateRow`),
+`src/sentinel/infrastructure/db/auth_source_repository.py` (new),
+`src/sentinel/infrastructure/db/token_store.py` (new),
+`alembic/versions/a7c3f1e9d2b4_create_auth_source_tables.py` (new),
+`tests/support/fakes.py` (+2 fakes),
+`tests/integration/test_auth_source_repository.py` (new),
+`tests/unit/infrastructure/test_monitor_row_mapping.py` (repointed).
+Follow-ups / parked: CRUD + manual-refresh API + monitor `auth_source_id`
+validation is S5b.3; probe injection + proactive/reactive refresh + single-flight
+is S5b.4. `query_params` secrets in the login request are not encrypted (v1 — body
++ secret headers cover credentials); revisit if a source ever puts a secret there.
+Commit(s): `feat(auth): AuthSource/TokenState persistence — repos, TokenStore, migration (S5b.2)`.
+Resume hint: start S5b.3 — write the failing auth-source API tests (create→redacted,
+refresh→metadata-only) before the DTOs/service/routes and `deps.py` wiring; redact
+`request.body` + credential headers + oauth secrets; refresh returns status +
+obtained_at/expires_at only.
 
 ### S5b.1 — Pure auth-source logic + value objects/entities  · 2026-06-27
 Done: The I/O-free heart of the token provider (SPEC §3.9) is in place — no

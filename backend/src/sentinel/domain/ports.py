@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Protocol
 from uuid import UUID
 
-from sentinel.domain.entities import CheckResult, Monitor
+from sentinel.domain.entities import AuthSource, CheckResult, Monitor, TokenState
 from sentinel.domain.value_objects import ProbeRequest, ProbeResponse
 
 
@@ -39,6 +39,32 @@ class CheckResultRepository(Protocol):
     async def list_for_monitor(
         self, monitor_id: UUID, *, limit: int = 100
     ) -> list[CheckResult]: ...
+
+
+class AuthSourceRepository(Protocol):
+    """Persistence boundary for `AuthSource` entities (SPEC §3.9). The SQL adapter
+    encrypts the request-body credentials, secret request headers, and oauth
+    secrets at rest via `SecretBox`; the entity always carries plaintext."""
+
+    async def add(self, auth_source: AuthSource) -> AuthSource: ...
+
+    async def get(self, auth_source_id: UUID) -> AuthSource | None: ...
+
+    async def list(self) -> list[AuthSource]: ...
+
+    async def update(self, auth_source: AuthSource) -> AuthSource: ...
+
+    async def delete(self, auth_source_id: UUID) -> bool: ...
+
+
+class TokenStore(Protocol):
+    """The single cached `TokenState` per auth source (SPEC §3.9). `save` is an
+    upsert — one row per source, shared by all linked monitors. The SQL adapter
+    encrypts `token`/`refresh_token` at rest via `SecretBox`."""
+
+    async def load(self, auth_source_id: UUID) -> TokenState | None: ...
+
+    async def save(self, token_state: TokenState) -> TokenState: ...
 
 
 class SecretBox(Protocol):

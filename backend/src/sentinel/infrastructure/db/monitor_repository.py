@@ -18,28 +18,13 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from sentinel.domain.entities import Monitor
-from sentinel.domain.logic.redaction import is_secret_header
 from sentinel.domain.ports import Clock, SecretBox
 from sentinel.domain.value_objects import Assertion, Auth, AuthType, BodyKind, HttpMethod
 from sentinel.infrastructure.db.models import MonitorRow
-
-
-def _encrypt_headers(headers: dict[str, str], secret_box: SecretBox) -> dict[str, str]:
-    """Encrypt secret-bearing header values for storage; pass others through. The
-    Fernet token is ASCII base64, stored as a plain string in the JSONB column."""
-    return {
-        name: (secret_box.encrypt(value).decode("ascii") if is_secret_header(name) else value)
-        for name, value in headers.items()
-    }
-
-
-def _decrypt_headers(headers: dict[str, str], secret_box: SecretBox) -> dict[str, str]:
-    """Inverse of `_encrypt_headers` — decrypt secret-bearing values on read so the
-    entity carries plaintext."""
-    return {
-        name: (secret_box.decrypt(value.encode("ascii")) if is_secret_header(name) else value)
-        for name, value in headers.items()
-    }
+from sentinel.infrastructure.db.secret_mapping import (
+    decrypt_secret_headers,
+    encrypt_secret_headers,
+)
 
 
 def _auth_to_json(auth: Auth | None) -> dict[str, Any] | None:
@@ -66,7 +51,7 @@ def _to_row(
         name=monitor.name,
         method=monitor.method.value,
         url=monitor.url,
-        headers=_encrypt_headers(monitor.headers, secret_box),
+        headers=encrypt_secret_headers(monitor.headers, secret_box),
         query_params=dict(monitor.query_params),
         body=monitor.body,
         body_kind=monitor.body_kind.value,
@@ -91,7 +76,7 @@ def _to_entity(row: MonitorRow, *, secret_box: SecretBox) -> Monitor:
         name=row.name,
         method=HttpMethod(row.method),
         url=row.url,
-        headers=_decrypt_headers(row.headers, secret_box),
+        headers=decrypt_secret_headers(row.headers, secret_box),
         query_params=dict(row.query_params),
         body=row.body,
         body_kind=BodyKind(row.body_kind),
