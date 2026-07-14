@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
 from typing import Any
+from uuid import UUID
 
 
 class HttpMethod(StrEnum):
@@ -115,6 +116,54 @@ class MonitorDraft:
     follow_redirects: bool = False
     assertions: list[Assertion] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+
+
+# --- State, stats & history (SPEC §3.5, §3.8, §4) ---------------------------
+
+
+class MonitorStatus(StrEnum):
+    """Current health of a monitor (SPEC §3.8). `unknown` until the first check
+    confirms `up` or `down`."""
+
+    UP = "up"
+    DOWN = "down"
+    UNKNOWN = "unknown"
+
+
+class StatsWindow(StrEnum):
+    """A supported stats window (SPEC §3.5). In S7 every window is computed from
+    raw `CheckResult`s; S7a will serve the long windows from hourly rollups."""
+
+    H24 = "24h"
+    D7 = "7d"
+    D30 = "30d"
+
+
+@dataclass(frozen=True)
+class StateTransition:
+    """A confirmed up↔down status change (SPEC §3.8, §4). Only confirmed
+    transitions create alerts and `status_changed` events (S8/S9). `at` is the
+    time of the check that confirmed the flip."""
+
+    monitor_id: UUID
+    from_status: MonitorStatus
+    to_status: MonitorStatus
+    at: datetime
+
+
+@dataclass(frozen=True)
+class Stats:
+    """Computed uptime/latency over a window (SPEC §3.5, §5). `status`/`since` are
+    intentionally absent — they come from the monitor's `MonitorState`. A latency
+    percentile is `None` when no timed result fell in the window."""
+
+    window: str
+    checks: int
+    failures: int
+    uptime_pct: float
+    latency_p50_ms: int | None
+    latency_p95_ms: int | None
+    latency_p99_ms: int | None
 
 
 # --- Auth source / token provider (SPEC §3.9, §4) ---------------------------

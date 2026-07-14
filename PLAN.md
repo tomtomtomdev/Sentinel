@@ -519,6 +519,30 @@ stable (after S7), against a mock server if needed.
   composition module). Config gains `heartbeat_url`, `scheduler_poll_seconds`,
   `scheduler_max_concurrency`.
 
+- **D22 — S7 split into S7.1/S7.2/S7.3; the transition decision is a
+  clean fold (`advance_state`) + a separate read (`transition_between`), not one
+  `derive_transition`.** State (§3.8) and stats (§3.5) are large enough to violate
+  the "couple hours per slice" rule together, so S7 is sequenced: **S7.1** pure
+  logic + value objects/entity (done), **S7.2** `MonitorState` persistence + wiring
+  the fold into `CheckService.run_check`, **S7.3** the `/results` + `/stats` +
+  `?include=summary` endpoints. PLAN §5 tentatively named a single
+  `derive_transition(state, result, thresholds) -> StateTransition | None`, but
+  that name conflates two jobs: advancing the counters/`last_check_at`/status
+  (needed every check, transition or not) and reporting whether a confirmed flip
+  happened. Splitting them keeps each pure function single-purpose and avoids
+  duplicating the counter-run logic: `advance_state` always returns the next
+  `MonitorState` (counters + `last_check_at` bump every check; `status`/`since`
+  move only on a threshold crossing, `since = result.finished_at`), and
+  `transition_between(before, after)` reads the two statuses to emit the
+  `StateTransition` (`at = after.since`) that S8/S9 consume. `compute_stats` uses
+  **nearest-rank** percentiles (returns an observed integer ms, no interpolation —
+  keeps values honest and JSON-clean), computes them over only the results that
+  recorded a latency (transport failures excluded), and returns `uptime_pct = 0.0`
+  on an empty window (there is no meaningful uptime without checks; callers read
+  `checks == 0` as "no data"). `Stats` deliberately omits `status`/`since` — those
+  belong to `MonitorState` and the §5 stats response is assembled from both at the
+  endpoint (S7.3).
+
 _Append new decisions here as `Dn — <decision>: <why>` when slices force a choice._
 
 ---

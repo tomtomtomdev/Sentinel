@@ -15,6 +15,7 @@ from sentinel.domain.value_objects import (
     ExpirySpec,
     HttpMethod,
     Injection,
+    MonitorStatus,
     OAuthConfig,
     ProbeRequest,
     TokenExtractor,
@@ -94,6 +95,21 @@ class CheckResult:
     error: ErrorKind | None = None
     assertion_results: list[AssertionResult] = field(default_factory=list)
     id: UUID = field(default_factory=uuid4)
+
+
+@dataclass
+class MonitorState:
+    """The current up/down rollup for a monitor (SPEC §3.8, §4) — one row per
+    monitor. Advanced by the pure `domain.logic.state` fold as each `CheckResult`
+    lands: the consecutive-run counters and `last_check_at` update every check,
+    while `status` and `since` move only on a confirmed threshold crossing."""
+
+    monitor_id: UUID
+    since: datetime
+    status: MonitorStatus = MonitorStatus.UNKNOWN
+    consecutive_failures: int = 0
+    consecutive_successes: int = 0
+    last_check_at: datetime | None = None
 
 
 @dataclass
