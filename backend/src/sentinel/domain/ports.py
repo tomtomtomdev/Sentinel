@@ -4,7 +4,14 @@ from datetime import datetime
 from typing import Protocol
 from uuid import UUID
 
-from sentinel.domain.entities import AuthSource, CheckResult, Monitor, MonitorState, TokenState
+from sentinel.domain.entities import (
+    AuthSource,
+    CheckResult,
+    CheckRollup,
+    Monitor,
+    MonitorState,
+    TokenState,
+)
 from sentinel.domain.value_objects import ProbeRequest, ProbeResponse
 
 
@@ -46,6 +53,23 @@ class CheckResultRepository(Protocol):
         until: datetime | None = None,
         limit: int | None = 100,
     ) -> list[CheckResult]: ...
+
+
+class CheckRollupRepository(Protocol):
+    """Persistence boundary for hourly `CheckRollup`s (SPEC §3.5, §4, §6). `save` is
+    an upsert keyed by `(monitor_id, bucket_start)` — one row per hour — so a
+    bucket is recomputed in place as checks land, stamping `updated_at` via the
+    injected `Clock`. `list_for_window` returns the monitor's rollups whose
+    `bucket_start` falls in `[since, until]` (both inclusive), oldest-first, for
+    long-window aggregation."""
+
+    async def get(self, monitor_id: UUID, bucket_start: datetime) -> CheckRollup | None: ...
+
+    async def save(self, rollup: CheckRollup) -> CheckRollup: ...
+
+    async def list_for_window(
+        self, monitor_id: UUID, *, since: datetime, until: datetime
+    ) -> list[CheckRollup]: ...
 
 
 class MonitorStateRepository(Protocol):

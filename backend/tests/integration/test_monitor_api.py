@@ -22,6 +22,7 @@ from sentinel.interface.main import create_app
 from tests.support.fakes import (
     FixedClock,
     InMemoryCheckResultRepository,
+    InMemoryCheckRollupRepository,
     InMemoryMonitorRepository,
     InMemoryMonitorStateRepository,
 )
@@ -57,6 +58,7 @@ async def api() -> AsyncIterator[tuple[httpx.AsyncClient, InMemoryMonitorReposit
         monitors=repo,
         results=InMemoryCheckResultRepository(),
         states=InMemoryMonitorStateRepository(),
+        rollups=InMemoryCheckRollupRepository(clock=clock),
         clock=clock,
     )
     transport = httpx.ASGITransport(app=app)

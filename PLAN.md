@@ -576,6 +576,41 @@ stable (after S7), against a mock server if needed.
   `SecretBox` and would fail fast without `SECRET_KEY`). The `StateTransition` from
   `advance_state` stays unconsumed until S8/S9.
 
+- **D24 — Rollups recompute a bucket from raw (idempotent, per-bucket-exact);
+  aggregation sums counts exactly and treats per-bucket percentiles as weighted
+  sketches.** S7a serves long windows from hourly `CheckRollup`s (PLAN D7). The pure
+  `fold_results_into_rollup(existing | None, results)` **recomputes** a single hour
+  bucket's aggregate from its raw `CheckResult`s rather than incrementing the
+  existing rollup — a pure function can only be idempotent by recomputing from the
+  full input, so this is what guarantees "re-folding a bucket doesn't double-count"
+  (SPEC §7) and makes the bucket's checks/failures/percentiles match `compute_stats`
+  restricted to that hour **exactly** (nearest-rank, no sketch loss). It is viable
+  because folding happens in `CheckService.run_check` right after the check lands,
+  when the bucket's raw rows are always present (well inside the 30-day raw window);
+  by the time raw is pruned (S10) the rollups are long since frozen. The bucket is
+  taken from `existing.bucket_start` (update) or the first result's hour (create),
+  and only results in that bucket are counted (so a caller may over-fetch); no
+  existing + no results raises. `aggregate_rollups(rollups, window)` sums
+  checks/failures/uptime **exactly** but can only **approximate** latency percentiles
+  across buckets — it returns a **check-weighted mean of the per-bucket nearest-rank
+  values** over buckets that recorded a latency (`None` when none). That is exact for
+  homogeneous hourly distributions (the parity test's fixture) and drifts for
+  heterogeneous ones — the accepted rollup trade-off ("within tolerance"). It takes
+  no `now`: the caller (`StatsService`) fetches only the in-window buckets via
+  `list_for_window`, so aggregation is a pure fold over what it's given.
+  `latency_sum_ms` is persisted per SPEC §4 (reserved for a future weighted-mean) but
+  the v1 aggregate weights by `checks` and doesn't read it. The nearest-rank helper
+  (`nearest_rank_percentile`) and `uptime_pct` were promoted to public in
+  `domain/logic/stats.py` and shared by both the raw and rollup paths so the two can
+  never drift. `CheckService` gains a **second optional dep** `rollups` (mirrors
+  `states`, D20) so the manual-check path and every existing call site stay green;
+  it folds on every result incl. transport failures. `StatsService.stats` branches:
+  **24h from raw** `compute_stats`, **7d/30d from** `aggregate_rollups`. The
+  `check_rollups` table uses a **composite primary key** `(monitor_id, bucket_start)`
+  for the one-row-per-hour upsert, carries no secrets (no `SecretBox`), and stamps
+  `updated_at` via the injected `Clock` (D10). Rollup retention (13mo, distinct from
+  raw pruning) is deferred to S10.
+
 _Append new decisions here as `Dn — <decision>: <why>` when slices force a choice._
 
 ---

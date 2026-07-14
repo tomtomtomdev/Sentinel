@@ -56,6 +56,25 @@ class CheckResultRow(SQLModel, table=True):
     assertion_results: list[Any] = Field(sa_column=Column(JSONB, nullable=False))
 
 
+class CheckRollupRow(SQLModel, table=True):
+    """Hourly aggregate per monitor (SPEC §3.5, §4, §6). Composite primary key
+    `(monitor_id, bucket_start)` — one row per hour, upserted as checks land."""
+
+    __tablename__ = "check_rollups"
+
+    monitor_id: uuid.UUID = Field(primary_key=True)
+    bucket_start: datetime = Field(
+        sa_column=Column(DateTime(timezone=True), primary_key=True, nullable=False)
+    )
+    checks: int
+    failures: int
+    latency_p50_ms: int
+    latency_p95_ms: int
+    latency_p99_ms: int
+    latency_sum_ms: int
+    updated_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
+
+
 class MonitorStateRow(SQLModel, table=True):
     """The current up/down rollup for a monitor (SPEC §3.8, §4) — one row per
     monitor, keyed by `monitor_id`, advanced in place as each check lands."""

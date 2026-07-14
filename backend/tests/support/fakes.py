@@ -4,10 +4,18 @@ adapters so the same contract test can run against either (PLAN D4)."""
 from __future__ import annotations
 
 import copy
+from dataclasses import replace
 from datetime import datetime
 from uuid import UUID
 
-from sentinel.domain.entities import AuthSource, CheckResult, Monitor, MonitorState, TokenState
+from sentinel.domain.entities import (
+    AuthSource,
+    CheckResult,
+    CheckRollup,
+    Monitor,
+    MonitorState,
+    TokenState,
+)
 from sentinel.domain.ports import Clock
 from sentinel.domain.value_objects import ProbeRequest, ProbeResponse
 
@@ -107,6 +115,36 @@ class InMemoryMonitorStateRepository:
     async def save(self, state: MonitorState) -> MonitorState:
         self._store[state.monitor_id] = copy.deepcopy(state)
         return copy.deepcopy(state)
+
+
+class InMemoryCheckRollupRepository:
+    """`CheckRollupRepository` backed by a dict keyed by `(monitor_id,
+    bucket_start)`. `save` upserts and stamps `updated_at` via the injected clock,
+    mirroring the SQL adapter (D10)."""
+
+    def __init__(self, clock: Clock) -> None:
+        self._clock = clock
+        self._store: dict[tuple[UUID, datetime], CheckRollup] = {}
+
+    async def get(self, monitor_id: UUID, bucket_start: datetime) -> CheckRollup | None:
+        found = self._store.get((monitor_id, bucket_start))
+        return copy.deepcopy(found) if found is not None else None
+
+    async def save(self, rollup: CheckRollup) -> CheckRollup:
+        stamped = replace(rollup, updated_at=self._clock.now())
+        self._store[(rollup.monitor_id, rollup.bucket_start)] = copy.deepcopy(stamped)
+        return copy.deepcopy(stamped)
+
+    async def list_for_window(
+        self, monitor_id: UUID, *, since: datetime, until: datetime
+    ) -> list[CheckRollup]:
+        matches = [
+            r
+            for (mid, bucket), r in self._store.items()
+            if mid == monitor_id and since <= bucket <= until
+        ]
+        matches.sort(key=lambda r: r.bucket_start)
+        return [copy.deepcopy(r) for r in matches]
 
 
 class InMemoryAuthSourceRepository:

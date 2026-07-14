@@ -41,6 +41,7 @@ from sentinel.domain.ports import (
 from sentinel.infrastructure.clock import SystemClock
 from sentinel.infrastructure.db.auth_source_repository import SqlAuthSourceRepository
 from sentinel.infrastructure.db.check_result_repository import SqlCheckResultRepository
+from sentinel.infrastructure.db.check_rollup_repository import SqlCheckRollupRepository
 from sentinel.infrastructure.db.engine import create_engine, create_session_factory
 from sentinel.infrastructure.db.monitor_repository import SqlMonitorRepository
 from sentinel.infrastructure.db.monitor_state_repository import SqlMonitorStateRepository
@@ -141,6 +142,7 @@ def build_runner(settings: Settings) -> SchedulerRunner:
     monitors = SqlMonitorRepository(factory, clock=clock, secret_box=secret_box)
     results = SqlCheckResultRepository(factory)
     states = SqlMonitorStateRepository(factory)
+    rollups = SqlCheckRollupRepository(factory, clock=clock)
     sources = SqlAuthSourceRepository(factory, clock=clock, secret_box=secret_box)
     tokens = SqlTokenStore(factory, secret_box=secret_box)
     probe = HttpxProbe()
@@ -151,6 +153,7 @@ def build_runner(settings: Settings) -> SchedulerRunner:
         probe=probe,
         clock=clock,
         states=states,
+        rollups=rollups,
         auth_sources=sources,
         auth=auth,
     )

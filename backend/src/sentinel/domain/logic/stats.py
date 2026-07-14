@@ -43,23 +43,29 @@ def compute_stats(results: list[CheckResult], window: StatsWindow, now: datetime
 
     checks = len(in_window)
     failures = sum(1 for r in in_window if not r.success)
-    uptime_pct = round((checks - failures) / checks * 100, 2) if checks else 0.0
 
     latencies = sorted(r.latency_ms for r in in_window if r.latency_ms is not None)
     return Stats(
         window=window.value,
         checks=checks,
         failures=failures,
-        uptime_pct=uptime_pct,
-        latency_p50_ms=_percentile(latencies, 50),
-        latency_p95_ms=_percentile(latencies, 95),
-        latency_p99_ms=_percentile(latencies, 99),
+        uptime_pct=uptime_pct(checks, failures),
+        latency_p50_ms=nearest_rank_percentile(latencies, 50),
+        latency_p95_ms=nearest_rank_percentile(latencies, 95),
+        latency_p99_ms=nearest_rank_percentile(latencies, 99),
     )
 
 
-def _percentile(values_sorted: list[int], pct: float) -> int | None:
+def uptime_pct(checks: int, failures: int) -> float:
+    """Uptime percentage rounded to two decimals; `0.0` when there were no checks
+    (callers read `checks == 0` as "no data"). Shared by raw and rollup stats."""
+    return round((checks - failures) / checks * 100, 2) if checks else 0.0
+
+
+def nearest_rank_percentile(values_sorted: list[int], pct: float) -> int | None:
     """Nearest-rank percentile of an ascending list, or `None` if empty. Returns
-    an actual observed value (no interpolation), so results stay integer ms."""
+    an actual observed value (no interpolation), so results stay integer ms. Shared
+    by `compute_stats` and the per-bucket rollup fold so the two never drift."""
     if not values_sorted:
         return None
     rank = math.ceil(pct / 100 * len(values_sorted))

@@ -19,6 +19,7 @@ from sentinel.domain.ports import AuthSourceRepository, Clock, HttpProbe, Secret
 from sentinel.infrastructure.clock import SystemClock
 from sentinel.infrastructure.db.auth_source_repository import SqlAuthSourceRepository
 from sentinel.infrastructure.db.check_result_repository import SqlCheckResultRepository
+from sentinel.infrastructure.db.check_rollup_repository import SqlCheckRollupRepository
 from sentinel.infrastructure.db.engine import create_engine, create_session_factory
 from sentinel.infrastructure.db.monitor_repository import SqlMonitorRepository
 from sentinel.infrastructure.db.monitor_state_repository import SqlMonitorStateRepository
@@ -89,6 +90,7 @@ def get_stats_service() -> StatsService:
         monitors=SqlMonitorRepository(factory, clock=clock, secret_box=get_secret_box()),
         results=SqlCheckResultRepository(factory),
         states=SqlMonitorStateRepository(factory),
+        rollups=SqlCheckRollupRepository(factory, clock=clock),
         clock=clock,
     )
 
@@ -102,6 +104,7 @@ def get_check_service() -> CheckService:
         probe=get_http_probe(),
         clock=clock,
         states=SqlMonitorStateRepository(factory),
+        rollups=SqlCheckRollupRepository(factory, clock=clock),
         auth_sources=get_auth_source_repository(),
         auth=get_auth_token_service(),
     )

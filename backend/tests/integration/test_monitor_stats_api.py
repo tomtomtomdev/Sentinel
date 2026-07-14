@@ -3,8 +3,9 @@
 `dependency_overrides` (PLAN D13) — no DB, no network.
 
 - `GET /monitors/{id}/results?from&to&limit` — windowed, newest-first history.
-- `GET /monitors/{id}/stats?window=24h|7d|30d` — `compute_stats` over raw results
-  plus `status`/`since` from the monitor's `MonitorState`.
+- `GET /monitors/{id}/stats?window=24h|7d|30d` — 24h from raw `compute_stats`,
+  7d/30d from the hourly `CheckRollup`s (S7a), plus `status`/`since` from the
+  monitor's `MonitorState`.
 - `GET /monitors?include=summary` — each monitor gets its status + 24h uptime.
 """
 
@@ -21,12 +22,14 @@ import pytest
 from sentinel.application.monitor_service import MonitorService
 from sentinel.application.stats_service import StatsService
 from sentinel.domain.entities import CheckResult, Monitor, MonitorState
+from sentinel.domain.logic.rollups import fold_results_into_rollup, hour_bucket
 from sentinel.domain.value_objects import ErrorKind, MonitorStatus
 from sentinel.interface.api.deps import get_monitor_service, get_stats_service
 from sentinel.interface.main import create_app
 from tests.support.fakes import (
     FixedClock,
     InMemoryCheckResultRepository,
+    InMemoryCheckRollupRepository,
     InMemoryMonitorRepository,
     InMemoryMonitorStateRepository,
 )
@@ -45,7 +48,19 @@ class Harness:
     monitors: InMemoryMonitorRepository
     results: InMemoryCheckResultRepository
     states: InMemoryMonitorStateRepository
+    rollups: InMemoryCheckRollupRepository
     clock: FixedClock
+
+    async def fold_rollups(self, monitor_id: object) -> None:
+        """Fold the monitor's raw results into hourly `CheckRollup`s, exactly as the
+        check pipeline does — so the long-window (7d/30d) path has data to serve."""
+        results = await self.results.list_for_monitor(monitor_id, limit=None)  # type: ignore[arg-type]
+        buckets: dict[datetime, list[CheckResult]] = {}
+        for r in results:
+            buckets.setdefault(hour_bucket(r.finished_at), []).append(r)
+        for bucket, group in buckets.items():
+            existing = await self.rollups.get(monitor_id, bucket)  # type: ignore[arg-type]
+            await self.rollups.save(fold_results_into_rollup(existing, group))
 
     async def add_monitor(self, **overrides: object) -> Monitor:
         params: dict[str, object] = {
@@ -85,14 +100,22 @@ async def harness() -> AsyncIterator[Harness]:
     monitors = InMemoryMonitorRepository(clock=clock)
     results = InMemoryCheckResultRepository()
     states = InMemoryMonitorStateRepository()
+    rollups = InMemoryCheckRollupRepository(clock=clock)
     app = create_app()
     app.dependency_overrides[get_monitor_service] = lambda: MonitorService(monitors)
     app.dependency_overrides[get_stats_service] = lambda: StatsService(
-        monitors=monitors, results=results, states=states, clock=clock
+        monitors=monitors, results=results, states=states, rollups=rollups, clock=clock
     )
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        yield Harness(client=client, monitors=monitors, results=results, states=states, clock=clock)
+        yield Harness(
+            client=client,
+            monitors=monitors,
+            results=results,
+            states=states,
+            rollups=rollups,
+            clock=clock,
+        )
     app.dependency_overrides.clear()
 
 
@@ -189,10 +212,13 @@ class TestStats:
         await harness.add_result(monitor.id, finished_at=NOW - timedelta(hours=1), latency_ms=50)
         # 2 days ago: outside 24h, inside 7d.
         await harness.add_result(monitor.id, finished_at=NOW - timedelta(days=2), latency_ms=90)
+        await harness.fold_rollups(monitor.id)  # 7d/30d are served from rollups (S7a)
 
+        # 24h is still computed from raw — only the 1h-old result is in range.
         h24 = (await harness.client.get(f"/api/v1/monitors/{monitor.id}/stats")).json()
         assert h24["checks"] == 1
 
+        # 7d is aggregated from the two hourly rollups.
         d7 = (
             await harness.client.get(
                 f"/api/v1/monitors/{monitor.id}/stats", params={"window": "7d"}
@@ -200,6 +226,33 @@ class TestStats:
         ).json()
         assert d7["window"] == "7d"
         assert d7["checks"] == 2
+
+    async def test_long_window_served_from_rollups(self, harness: Harness) -> None:
+        monitor = await harness.add_monitor()
+        # Two hourly buckets 8 days back (outside 24h, inside 30d), each with
+        # latencies 100..1000 over 10 successful checks.
+        base = NOW - timedelta(days=8)
+        for hour in (base, base + timedelta(hours=1)):
+            for m in range(10):
+                await harness.add_result(
+                    monitor.id, finished_at=hour + timedelta(minutes=m), latency_ms=(m + 1) * 100
+                )
+        await harness.fold_rollups(monitor.id)
+
+        d30 = (
+            await harness.client.get(
+                f"/api/v1/monitors/{monitor.id}/stats", params={"window": "30d"}
+            )
+        ).json()
+        assert d30["window"] == "30d"
+        assert d30["checks"] == 20
+        assert d30["uptime_pct"] == 100.0
+        # Uniform buckets → aggregated percentiles equal the raw nearest-rank values.
+        assert d30["latency_ms"] == {"p50": 500, "p95": 1000, "p99": 1000}
+
+        # 24h (raw) sees none of the 8-day-old checks.
+        h24 = (await harness.client.get(f"/api/v1/monitors/{monitor.id}/stats")).json()
+        assert h24["checks"] == 0
 
     async def test_no_data_reads_unknown(self, harness: Harness) -> None:
         monitor = await harness.add_monitor()

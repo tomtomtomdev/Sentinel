@@ -98,6 +98,28 @@ class CheckResult:
 
 
 @dataclass
+class CheckRollup:
+    """An hourly aggregate of a monitor's checks (SPEC §3.5, §4, §6) — one row per
+    `(monitor_id, bucket_start)`. Folded from the raw `CheckResult`s in the bucket
+    by `domain.logic.rollups` so long-window (7d/30d) stats never scan raw rows,
+    and retained far longer than raw (PLAN D7). The percentiles are the bucket's
+    nearest-rank sketch (0 when no check recorded a latency); `latency_sum_ms` is
+    kept for weighted aggregation across buckets. `updated_at` is stamped at
+    persistence via the injected `Clock` (D10), so it is `None` on a freshly folded
+    rollup."""
+
+    monitor_id: UUID
+    bucket_start: datetime
+    checks: int = 0
+    failures: int = 0
+    latency_p50_ms: int = 0
+    latency_p95_ms: int = 0
+    latency_p99_ms: int = 0
+    latency_sum_ms: int = 0
+    updated_at: datetime | None = None
+
+
+@dataclass
 class MonitorState:
     """The current up/down rollup for a monitor (SPEC §3.8, §4) — one row per
     monitor. Advanced by the pure `domain.logic.state` fold as each `CheckResult`

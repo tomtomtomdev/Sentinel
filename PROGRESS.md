@@ -20,7 +20,31 @@
 
 ## Current state
 
-- **Phase:** **S7.3 complete — S7 (State, stats & history) is DONE.** The three
+- **Phase:** **S7a complete — rollups & long-window stats.** Hourly `CheckRollup`s
+  now back the 7d/30d stat windows so a long query never scans raw rows (SPEC §6,
+  PLAN D7). Two new pure functions in `domain/logic/rollups.py`: `hour_bucket(at)`
+  (UTC hour truncation) and `fold_results_into_rollup(existing | None, results) ->
+  CheckRollup`, which **recomputes** one hour bucket's aggregate from its raw
+  `CheckResult`s (checks/failures + nearest-rank p50/p95/p99 + `latency_sum_ms`) —
+  recompute-not-increment makes it **idempotent** (re-folding never double-counts)
+  and per-bucket-exact vs `compute_stats`; plus `aggregate_rollups(rollups, window)
+  -> Stats` (exact summed checks/failures/uptime; **check-weighted** percentiles
+  across the per-bucket sketches — approximate across heterogeneous buckets, the
+  accepted rollup trade-off). The nearest-rank helper + `uptime_pct` were promoted
+  to public in `domain/logic/stats.py` so raw and rollup paths can't drift. New
+  `CheckRollup` entity (SPEC §4), `CheckRollupRepository` port (`get`/`save`
+  upsert by composite `(monitor_id, bucket_start)`/`list_for_window`), in-memory
+  fake + `SqlCheckRollupRepository` (`check_rollups` table, composite PK, migration
+  `c9d2e5f80a14`; `updated_at` stamped via `Clock`, no secrets → no `SecretBox`).
+  `CheckService` gained a **second optional dep** `rollups` (mirrors `states`):
+  after recording a result it recomputes that result's hour bucket from raw and
+  upserts the rollup — on every path incl. transport failures. `StatsService.stats`
+  now branches: **24h from raw** `compute_stats`, **7d/30d from** `aggregate_rollups`
+  over `list_for_window`. Wired into `deps.py` (both `get_stats_service` +
+  `get_check_service`) and the worker `build_runner`. Rollup retention (13mo,
+  separate from raw pruning) lands with **S10**. The `StateTransition` from
+  `advance_state` still stays **unconsumed** until S8 (event) / S9 (alert).
+- **Prior phase:** **S7.3 complete — S7 (State, stats & history) is DONE.** The three
   §3.5 read endpoints ship, all through a new `StatsService`
   (`application/stats_service.py`) that orchestrates existing ports (no rules):
   `GET /monitors/{id}/results?from&to&limit` (windowed, newest-first history, 404
@@ -37,7 +61,7 @@
   `window_start(window, now)` helper in `domain/logic/stats.py`. Wired
   `get_stats_service` in `deps.py`. The `StateTransition` from `advance_state`
   remains **unconsumed** until S8 (event) / S9 (alert).
-- **Prior phase:** **S7.2 complete** — `MonitorState` persistence + the check pipeline
+- **Earlier phase:** **S7.2 complete** — `MonitorState` persistence + the check pipeline
   now advances it. New `MonitorStateRepository` port (`get(monitor_id) ->
   MonitorState | None`, `save(state)` upsert — one row per monitor) with an
   in-memory fake + `SqlMonitorStateRepository` (`monitor_states` table, migration
@@ -47,14 +71,14 @@
   result.finished_at)`), folds via `advance_state(...)` with the monitor's
   thresholds, and `save`s — on **every** path incl. transport-failure results (a
   `ProbeError` result advances the counters as a failure).
-- **Earlier phase:** **S7.1 complete** — pure state + stats logic (S7 split into
+- **Older phase:** **S7.1 complete** — pure state + stats logic (S7 split into
   S7.1/S7.2/S7.3). `domain/logic/state.py` — `initial_state`, `advance_state`
   (folds a `CheckResult`: counters + `last_check_at` bump every check,
   `status`/`since` flip only on a threshold crossing), `transition_between`;
   `domain/logic/stats.py` — `compute_stats` (window-filtered uptime %, nearest-rank
   p50/p95/p99). Value objects `MonitorStatus`/`StatsWindow`/`StateTransition`/
   `Stats` + the `MonitorState` entity (SPEC §4).
-- **Older phase:** **S6 complete** — scheduler runner (PLAN D21). A worker
+- **Oldest phase:** **S6 complete** — scheduler runner (PLAN D21). A worker
   (`python -m sentinel.infrastructure.scheduler` / `just worker`) loops over the
   pure `select_due_monitors` decision: each cycle it lists monitors, selects the
   **enabled, due** ones (per-monitor **jitter**, **skip-don't-backfill**), probes
@@ -65,18 +89,23 @@
   state is an in-memory last-run map **seeded on startup from each monitor's most
   recent `CheckResult`** so a restart resumes the cadence rather than re-probing all
   at once (no new `last_check_at` column — `MonitorState` is S7).
-- **Last green commit:** S7.2 (`feat(state): MonitorState persistence + fold into
-  check pipeline (S7.2)`); S7.3 staged.
-- **Test suite:** `just test` (no DB) → **302 passed, 30 skipped** (+15 from S7.3).
-  With `TEST_DATABASE_URL=…/sentinel_test` → **332 passed** (no skips). New: `tests/
-  integration/test_monitor_stats_api.py` (12 — results newest-first / from-to window
-  / limit / 404; stats match a known fixture incl. status+since / window selects the
-  range / no-data→unknown / unknown-window→422 / unknown-monitor→404; list
-  `?include=summary` attaches status+24h uptime+p95+last-check / unknown→"no data" /
-  plain list has `summary=null`), plus 3 `CheckResultRepository` contract tests
-  (`test_check_result_repository.py`: none-limit→all, since/until window inclusive,
-  since composes with limit) × {memory, pg}.
-- **Schema/migrations:** head **`e11783af3b0a`** (unchanged — S7.3 added no columns).
+- **Last green commit:** S7.3 (`feat(stats): results/stats/summary read endpoints via
+  StatsService (S7.3)`); S7a staged.
+- **Test suite:** `just test` (no DB) → **326 passed, 35 skipped** (+24 from S7a).
+  With `TEST_DATABASE_URL=…/sentinel_test` → **361 passed** (no skips). New: `tests/
+  unit/domain/test_rollups.py` (13 — hour_bucket truncation; fold counts/sum/nearest-
+  rank + failure/transport handling + idempotency + bucket-scoping + no-bucket raise;
+  fold-vs-`compute_stats` per-bucket parity; aggregate sum/uptime + empty→no-data +
+  transport-only→null percentiles + fold→aggregate matches raw), `tests/integration/
+  test_check_rollup_repository.py` (5 × {memory, pg} — get-missing, all-field round-
+  trip incl. `updated_at` stamp, upsert-one-row-per-bucket, window filter inclusive+
+  ordered, monitor-scoped), `tests/integration/test_check_pipeline_rollup.py` (5 —
+  same-hour→one rollup recomputed, cross-hour→two, failed-assertion counts, transport
+  failure folds with no latency, no-repo→still records). `test_monitor_stats_api.py`
+  +1 (7d/30d served from rollups) and its harness folds rollups; `test_monitor_api.py`
+  harness now also wires the rollup fake.
+- **Schema/migrations:** head **`c9d2e5f80a14`** (`check_rollups`, composite PK
+  `(monitor_id, bucket_start)`).
 - **Deps:** unchanged.
 - **Config:** **+`heartbeat_url`, `scheduler_poll_seconds`,
   `scheduler_max_concurrency`** (see `.env.example` candidates).
@@ -84,20 +113,21 @@
 
 ## Next action
 
-➡️ **Begin S7a — rollups & long-window stats.** Write failing unit tests first for
-the two pure functions, then wire them: `fold_results_into_rollup(rollup | None,
-results) -> CheckRollup` (idempotent **per hour bucket** — re-folding a bucket must
-not double-count; test parity vs raw `compute_stats` within tolerance) and
-`aggregate_rollups(rollups, window) -> Stats` (weighted p50/p95/p99 across buckets,
-using `latency_sum_ms` for the mean and the per-bucket percentiles as sketches —
-SPEC §4 `CheckRollup`). Add the `CheckRollup` entity + `CheckRollupRepository` port
-(fake + `SqlCheckRollupRepository`, `(monitor_id, bucket_start)` unique) + Alembic
-migration; fold into rollups as checks complete in `CheckService.run_check` (a
-second optional dep, like `states`). Then switch `StatsService` so **7d/30d** windows
-are served from `aggregate_rollups` while **24h** stays raw (SPEC §3.5, §6, PLAN D7).
-Rollup retention (13mo) is separate from raw pruning (that lands with S10). See
-**sentinel-architecture** (add-a-capability recipe) + **sentinel-probe-and-assertions**.
-The `StateTransition` from `advance_state` still stays unconsumed until S8 / S9.
+➡️ **Begin S8 — SSE live events (SPEC §3.6).** Add an in-process event bus port +
+adapter and `GET /api/v1/events` (a `text/event-stream` `StreamingResponse`), and
+emit two event types: `check_completed` after every recorded `CheckResult`, and
+`status_changed` on a confirmed transition. **This is where the `StateTransition`
+finally gets consumed:** `CheckService` already computes the new state via
+`advance_state`; call `transition_between(before, after)` and, when it returns a
+transition, publish `status_changed`. Write the failing integration test first (a
+connected SSE client receives a `check_completed` event after `run_check`, and a
+`status_changed` only when a threshold crossing occurs), then the bus (fan-out to
+per-subscriber async queues, back-pressure/drop policy, unsubscribe on disconnect),
+the endpoint, and the `CheckService` publish calls (a new **optional** `events` dep,
+mirroring `states`/`rollups`, so the manual-check path and existing tests stay
+green). Keep the bus a `domain` port with an in-memory fake; the concrete lives in
+`infrastructure`. See **sentinel-architecture** (add-a-capability recipe). S9 then
+turns the same transition into an alert with cooldown/flap damping.
 
 ---
 
@@ -120,7 +150,7 @@ The `StateTransition` from `advance_state` still stays unconsumed until S8 / S9.
   - [x] **S7.1** Pure state + stats logic + value objects/entity
   - [x] **S7.2** `MonitorState` persistence (repo + migration) + wire into check pipeline
   - [x] **S7.3** `GET /results`, `GET /stats`, `?include=summary` endpoints
-- [ ] **S7a** Rollups & long-window stats
+- [x] **S7a** Rollups & long-window stats
 - [ ] **S8** SSE live events
 - [ ] **S9** Alert channels + notify (cooldown + flap damping)
 - [ ] **S9a** Minimal API auth gate
@@ -146,6 +176,79 @@ The `StateTransition` from `advance_state` still stays unconsumed until S8 / S9.
 > Commit(s): <conventional commit subject lines>
 > Resume hint: <the very next concrete step>
 > ```
+
+### S7a — Rollups & long-window stats  · 2026-07-14
+Done: Long-window (7d/30d) stats are now served from hourly `CheckRollup`s instead
+of scanning raw rows (SPEC §6, PLAN D7). Two pure functions in
+`domain/logic/rollups.py`: `hour_bucket(at)` (UTC hour truncation) and
+`fold_results_into_rollup(existing | None, results) -> CheckRollup` — it
+**recomputes** a single hour bucket's aggregate from the raw `CheckResult`s in it
+(checks, failures, nearest-rank p50/p95/p99 over timed results, `latency_sum_ms`),
+so re-folding the same rows is **idempotent** (no double-count) and the per-bucket
+numbers match `compute_stats` restricted to that hour **exactly**. The bucket comes
+from `existing.bucket_start` (update) or the first result's hour (create); only
+results in that bucket are counted (a wider fetch is safe); no existing + no results
+raises `ValueError`; `updated_at` is left `None` (stamped at persistence, D10). Also
+`aggregate_rollups(rollups, window) -> Stats`: checks/failures/uptime are exact sums;
+latency percentiles are **check-weighted** across the buckets that recorded a latency
+(`None` when none) — approximate across heterogeneous buckets, the accepted rollup
+trade-off ("within tolerance", SPEC §7). The nearest-rank helper (→
+`nearest_rank_percentile`) and a new `uptime_pct(checks, failures)` were promoted to
+public in `domain/logic/stats.py` and reused by both paths so raw and rollup stats
+can't drift. New `CheckRollup` entity (SPEC §4), `CheckRollupRepository` port
+(`get(monitor_id, bucket_start)` / `save` upsert by composite `(monitor_id,
+bucket_start)` / `list_for_window`), in-memory fake + `SqlCheckRollupRepository`
+(`check_rollups` table, composite PK, migration `c9d2e5f80a14`; `updated_at` via
+injected `Clock`; no secrets → no `SecretBox`). `CheckService` gained a **second
+optional** `rollups` dep (mirrors `states`, D20): `run_check` → `_advance_rollup`
+refetches the result's hour bucket from raw (`list_for_monitor` since=bucket,
+until=bucket+1h, `limit=None`) and upserts the recomputed rollup — on **every** path
+incl. transport failures. `StatsService.stats` now branches: **24h** from raw
+`compute_stats`, **7d/30d** from `aggregate_rollups` over `list_for_window(since=
+hour_bucket(window_start(window, now)), until=now)`. Wired into `deps.py`
+(`get_stats_service` + `get_check_service`) and the worker `build_runner`.
+Tests: `tests/unit/domain/test_rollups.py` (13); `tests/integration/
+test_check_rollup_repository.py` (5 × {memory, pg}); `tests/integration/
+test_check_pipeline_rollup.py` (5); `test_monitor_stats_api.py` +1 (7d/30d from
+rollups) with the harness folding rollups; `test_monitor_api.py` harness wires the
+rollup fake. Suite: **326 passed / 35 skipped** (no DB); **361 with PG**
+(`sentinel_test`). ruff + mypy strict clean. App boots (`/api/v1/health` 200); all
+three composition roots build with the rollup repo wired (no DB opened at import).
+Decisions: **D24** (fold recomputes-not-increments for idempotency + exact per-bucket
+parity; aggregate uses exact count sums + check-weighted per-bucket percentile
+sketches, approximate across heterogeneous buckets; promoted `nearest_rank_percentile`
++ `uptime_pct` to shared; `rollups` a second optional `CheckService` dep; 24h raw /
+7d-30d rollup split in `StatsService`; composite-PK `check_rollups`, `updated_at` via
+Clock) added to PLAN §7.
+Files: `src/sentinel/domain/entities.py` (+`CheckRollup`),
+`src/sentinel/domain/logic/rollups.py` (new),
+`src/sentinel/domain/logic/stats.py` (`_percentile`→`nearest_rank_percentile`,
++`uptime_pct`), `src/sentinel/domain/ports.py` (+`CheckRollupRepository`),
+`src/sentinel/infrastructure/db/models.py` (+`CheckRollupRow`),
+`src/sentinel/infrastructure/db/check_rollup_repository.py` (new),
+`alembic/versions/c9d2e5f80a14_create_check_rollups_table.py` (new),
+`src/sentinel/application/check_service.py` (optional `rollups` dep + `_advance_rollup`),
+`src/sentinel/application/stats_service.py` (24h-raw / 7d-30d-rollup branch),
+`src/sentinel/interface/api/deps.py` + `src/sentinel/infrastructure/scheduler.py`
+(wire rollup repo), `tests/support/fakes.py` (+`InMemoryCheckRollupRepository`),
+`tests/unit/domain/test_rollups.py` + `tests/integration/{test_check_rollup_repository,
+test_check_pipeline_rollup}.py` (new), `tests/integration/{test_monitor_stats_api,
+test_monitor_api}.py` (rollup wiring).
+Follow-ups / parked: **rollup retention (13mo)** + raw pruning is **S10** — nothing
+prunes `check_rollups` yet. `aggregate_rollups` percentiles are approximate for
+heterogeneous hourly distributions and at window edges (partial boundary bucket
+included whole); exact for homogeneous buckets, which the parity test uses.
+`latency_sum_ms` is persisted per SPEC §4 but not yet read by `aggregate_rollups`
+(reserved for a future weighted-mean); percentiles are weighted by `checks`. The
+`?include=summary` list still computes 24h from raw per-monitor (N+1, D23) — rollups
+don't help the 24h path. The `StateTransition` from `advance_state` is still
+unconsumed (S8 event / S9 alert).
+Commit(s): `feat(stats): hourly rollups + long-window stats from rollups (S7a)`.
+Resume hint: start S8 — write the failing SSE integration test (a connected client
+receives `check_completed` after `run_check`, and `status_changed` only on a
+threshold crossing) before the event-bus port/fake/adapter, `GET /events`, and the
+`CheckService` publish calls (consume `transition_between` here; new optional
+`events` dep).
 
 ### S7.3 — `/results`, `/stats`, `?include=summary` endpoints  · 2026-07-14
 Done: The §3.5 read model ships and **S7 is complete**. Three endpoints, all

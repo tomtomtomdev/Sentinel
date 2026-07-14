@@ -1,11 +1,12 @@
 """Read-model use cases for a monitor's history, stats, and dashboard summary
 (SPEC §3.5). Orchestration only: it loads raw `CheckResult`s and the monitor's
-`MonitorState` through ports and hands them to the pure `compute_stats` fold — no
-business rules live here. `now` comes from the injected `Clock` (PLAN D4).
+`MonitorState` through ports and hands them to the pure `compute_stats` /
+`aggregate_rollups` folds — no business rules live here. `now` comes from the
+injected `Clock` (PLAN D4).
 
-In S7 every window (incl. 7d/30d) is computed from raw rows; S7a will serve the
-long windows from hourly rollups so a 30-day query never scans millions of rows
-(SPEC §6, PLAN D7)."""
+The 24h window is computed from raw `CheckResult`s; 7d/30d are aggregated from the
+hourly `CheckRollup`s so a 30-day query never scans millions of raw rows (SPEC §6,
+PLAN D7)."""
 
 from __future__ import annotations
 
@@ -15,9 +16,11 @@ from uuid import UUID
 
 from sentinel.domain.entities import CheckResult, Monitor
 from sentinel.domain.errors import NotFoundError
+from sentinel.domain.logic.rollups import aggregate_rollups, hour_bucket
 from sentinel.domain.logic.stats import compute_stats, window_start
 from sentinel.domain.ports import (
     CheckResultRepository,
+    CheckRollupRepository,
     Clock,
     MonitorRepository,
     MonitorStateRepository,
@@ -58,11 +61,13 @@ class StatsService:
         monitors: MonitorRepository,
         results: CheckResultRepository,
         states: MonitorStateRepository,
+        rollups: CheckRollupRepository,
         clock: Clock,
     ) -> None:
         self._monitors = monitors
         self._results = results
         self._states = states
+        self._rollups = rollups
         self._clock = clock
 
     async def history(
@@ -81,13 +86,22 @@ class StatsService:
         )
 
     async def stats(self, monitor_id: UUID, window: StatsWindow) -> StatsView:
-        """Uptime/latency over `window` plus live status/since (SPEC §3.5, §5)."""
+        """Uptime/latency over `window` plus live status/since (SPEC §3.5, §5). The
+        24h window is computed from raw `CheckResult`s; 7d/30d are aggregated from
+        the hourly `CheckRollup`s so a long window never scans millions of raw rows
+        (SPEC §6, PLAN D7)."""
         await self._require_monitor(monitor_id)
         now = self._clock.now()
-        results = await self._window_results(monitor_id, window, now)
+        if window is StatsWindow.H24:
+            stats = compute_stats(await self._window_results(monitor_id, window, now), window, now)
+        else:
+            rollups = await self._rollups.list_for_window(
+                monitor_id, since=hour_bucket(window_start(window, now)), until=now
+            )
+            stats = aggregate_rollups(rollups, window)
         state = await self._states.get(monitor_id)
         return StatsView(
-            stats=compute_stats(results, window, now),
+            stats=stats,
             status=state.status if state else MonitorStatus.UNKNOWN,
             since=state.since if state else None,
         )

@@ -13,7 +13,7 @@ retry (no loops); a persistent 401 is one recorded failed check."""
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from uuid import UUID
 
 from sentinel.application.auth_token_service import AuthTokenService
@@ -21,10 +21,12 @@ from sentinel.domain.entities import AuthSource, CheckResult, Monitor
 from sentinel.domain.errors import NotFoundError, ProbeError
 from sentinel.domain.logic.assertions import evaluate_assertions
 from sentinel.domain.logic.auth import apply_injection
+from sentinel.domain.logic.rollups import fold_results_into_rollup, hour_bucket
 from sentinel.domain.logic.state import advance_state, initial_state
 from sentinel.domain.ports import (
     AuthSourceRepository,
     CheckResultRepository,
+    CheckRollupRepository,
     Clock,
     HttpProbe,
     MonitorRepository,
@@ -42,6 +44,7 @@ class CheckService:
         probe: HttpProbe,
         clock: Clock,
         states: MonitorStateRepository | None = None,
+        rollups: CheckRollupRepository | None = None,
         auth_sources: AuthSourceRepository | None = None,
         auth: AuthTokenService | None = None,
     ) -> None:
@@ -50,6 +53,7 @@ class CheckService:
         self._probe = probe
         self._clock = clock
         self._states = states
+        self._rollups = rollups
         self._auth_sources = auth_sources
         self._auth = auth
 
@@ -60,6 +64,7 @@ class CheckService:
 
         result = await self._probe_and_record(monitor)
         await self._advance_state(monitor, result)
+        await self._advance_rollup(monitor, result)
         return result
 
     async def _probe_and_record(self, monitor: Monitor) -> CheckResult:
@@ -107,6 +112,21 @@ class CheckService:
             recovery_threshold=monitor.recovery_threshold,
         )
         await self._states.save(updated)
+
+    async def _advance_rollup(self, monitor: Monitor, result: CheckResult) -> None:
+        """Recompute the result's hour-bucket `CheckRollup` from raw and upsert it
+        (SPEC §3.5, §6). Recomputing the whole bucket from its raw rows keeps the
+        fold idempotent — a replayed check never double-counts — and the raw rows are
+        always present (the check just landed, well inside the raw-retention window).
+        No-op when no rollup repository is wired (e.g. the manual-check path)."""
+        if self._rollups is None:
+            return
+        bucket = hour_bucket(result.finished_at)
+        bucket_results = await self._results.list_for_monitor(
+            monitor.id, since=bucket, until=bucket + timedelta(hours=1), limit=None
+        )
+        existing = await self._rollups.get(monitor.id, bucket)
+        await self._rollups.save(fold_results_into_rollup(existing, bucket_results))
 
     async def _load_auth_source(self, monitor: Monitor) -> AuthSource | None:
         if monitor.auth_source_id is None or self._auth_sources is None or self._auth is None:
