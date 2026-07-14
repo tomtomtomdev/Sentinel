@@ -56,6 +56,22 @@ class CheckResultRow(SQLModel, table=True):
     assertion_results: list[Any] = Field(sa_column=Column(JSONB, nullable=False))
 
 
+class MonitorStateRow(SQLModel, table=True):
+    """The current up/down rollup for a monitor (SPEC §3.8, §4) — one row per
+    monitor, keyed by `monitor_id`, advanced in place as each check lands."""
+
+    __tablename__ = "monitor_states"
+
+    monitor_id: uuid.UUID = Field(primary_key=True)
+    status: str
+    since: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
+    consecutive_failures: int
+    consecutive_successes: int
+    last_check_at: datetime | None = Field(
+        default=None, sa_column=Column(DateTime(timezone=True), nullable=True)
+    )
+
+
 class AuthSourceRow(SQLModel, table=True):
     """Auth source (SPEC §3.9). `request` and `oauth` are JSONB; the secret values
     inside them (request body, secret headers, oauth client_secret/username/

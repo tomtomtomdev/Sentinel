@@ -43,6 +43,7 @@ from sentinel.infrastructure.db.auth_source_repository import SqlAuthSourceRepos
 from sentinel.infrastructure.db.check_result_repository import SqlCheckResultRepository
 from sentinel.infrastructure.db.engine import create_engine, create_session_factory
 from sentinel.infrastructure.db.monitor_repository import SqlMonitorRepository
+from sentinel.infrastructure.db.monitor_state_repository import SqlMonitorStateRepository
 from sentinel.infrastructure.db.token_store import SqlTokenStore
 from sentinel.infrastructure.heartbeat import HttpxHeartbeat, NullHeartbeat
 from sentinel.infrastructure.probe import HttpxProbe
@@ -139,6 +140,7 @@ def build_runner(settings: Settings) -> SchedulerRunner:
     secret_box = FernetSecretBox(settings.secret_key_ring())
     monitors = SqlMonitorRepository(factory, clock=clock, secret_box=secret_box)
     results = SqlCheckResultRepository(factory)
+    states = SqlMonitorStateRepository(factory)
     sources = SqlAuthSourceRepository(factory, clock=clock, secret_box=secret_box)
     tokens = SqlTokenStore(factory, secret_box=secret_box)
     probe = HttpxProbe()
@@ -148,6 +150,7 @@ def build_runner(settings: Settings) -> SchedulerRunner:
         results=results,
         probe=probe,
         clock=clock,
+        states=states,
         auth_sources=sources,
         auth=auth,
     )

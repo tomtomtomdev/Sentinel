@@ -7,7 +7,7 @@ import copy
 from datetime import datetime
 from uuid import UUID
 
-from sentinel.domain.entities import AuthSource, CheckResult, Monitor, TokenState
+from sentinel.domain.entities import AuthSource, CheckResult, Monitor, MonitorState, TokenState
 from sentinel.domain.ports import Clock
 from sentinel.domain.value_objects import ProbeRequest, ProbeResponse
 
@@ -78,6 +78,22 @@ class InMemoryCheckResultRepository:
         matches = [r for r in self._store if r.monitor_id == monitor_id]
         matches.sort(key=lambda r: r.finished_at, reverse=True)
         return [copy.deepcopy(r) for r in matches[:limit]]
+
+
+class InMemoryMonitorStateRepository:
+    """`MonitorStateRepository` backed by a dict — one `MonitorState` per monitor.
+    `save` upserts, mirroring the SQL adapter."""
+
+    def __init__(self) -> None:
+        self._store: dict[UUID, MonitorState] = {}
+
+    async def get(self, monitor_id: UUID) -> MonitorState | None:
+        found = self._store.get(monitor_id)
+        return copy.deepcopy(found) if found is not None else None
+
+    async def save(self, state: MonitorState) -> MonitorState:
+        self._store[state.monitor_id] = copy.deepcopy(state)
+        return copy.deepcopy(state)
 
 
 class InMemoryAuthSourceRepository:

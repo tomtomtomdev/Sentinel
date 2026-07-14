@@ -20,6 +20,7 @@ from sentinel.infrastructure.db.auth_source_repository import SqlAuthSourceRepos
 from sentinel.infrastructure.db.check_result_repository import SqlCheckResultRepository
 from sentinel.infrastructure.db.engine import create_engine, create_session_factory
 from sentinel.infrastructure.db.monitor_repository import SqlMonitorRepository
+from sentinel.infrastructure.db.monitor_state_repository import SqlMonitorStateRepository
 from sentinel.infrastructure.db.token_store import SqlTokenStore
 from sentinel.infrastructure.probe import HttpxProbe
 from sentinel.infrastructure.secrets import FernetSecretBox
@@ -88,6 +89,7 @@ def get_check_service() -> CheckService:
         results=SqlCheckResultRepository(factory),
         probe=get_http_probe(),
         clock=clock,
+        states=SqlMonitorStateRepository(factory),
         auth_sources=get_auth_source_repository(),
         auth=get_auth_token_service(),
     )

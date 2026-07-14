@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Protocol
 from uuid import UUID
 
-from sentinel.domain.entities import AuthSource, CheckResult, Monitor, TokenState
+from sentinel.domain.entities import AuthSource, CheckResult, Monitor, MonitorState, TokenState
 from sentinel.domain.value_objects import ProbeRequest, ProbeResponse
 
 
@@ -39,6 +39,16 @@ class CheckResultRepository(Protocol):
     async def list_for_monitor(
         self, monitor_id: UUID, *, limit: int = 100
     ) -> list[CheckResult]: ...
+
+
+class MonitorStateRepository(Protocol):
+    """Persistence boundary for the per-monitor `MonitorState` rollup (SPEC §3.8,
+    §4). `save` is an upsert — one row per monitor — so the state is advanced in
+    place as each check lands. `get` returns `None` before a monitor's first check."""
+
+    async def get(self, monitor_id: UUID) -> MonitorState | None: ...
+
+    async def save(self, state: MonitorState) -> MonitorState: ...
 
 
 class AuthSourceRepository(Protocol):

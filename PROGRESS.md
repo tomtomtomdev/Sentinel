@@ -20,20 +20,26 @@
 
 ## Current state
 
-- **Phase:** **S7.1 complete** — pure state + stats logic (S7 split into
-  S7.1/S7.2/S7.3, see checklist). Two I/O-free domain modules land the heart of
-  SPEC §3.8/§3.5: `domain/logic/state.py` — `initial_state(monitor_id, at)`,
-  `advance_state(state, result, *, failure_threshold, recovery_threshold)` (folds
-  one `CheckResult` into the next `MonitorState`: counters + `last_check_at` bump
-  every check, `status`/`since` flip only on a threshold crossing), and
-  `transition_between(before, after) -> StateTransition | None` (the confirmed
-  up↔down change, `at = after.since`); `domain/logic/stats.py` —
-  `compute_stats(results, window, now) -> Stats` (window-filtered uptime %,
-  check/failure counts, nearest-rank p50/p95/p99 over results that recorded a
-  latency; empty window → `uptime_pct 0.0`, `None` percentiles). New value objects
-  `MonitorStatus`/`StatsWindow`/`StateTransition`/`Stats` and the `MonitorState`
-  entity (SPEC §4). **No persistence or endpoints yet** — that's S7.2/S7.3.
-- **Prior phase:** **S6 complete** — scheduler runner (PLAN D21). A worker
+- **Phase:** **S7.2 complete** — `MonitorState` persistence + the check pipeline
+  now advances it. New `MonitorStateRepository` port (`get(monitor_id) ->
+  MonitorState | None`, `save(state)` upsert — one row per monitor) with an
+  in-memory fake + `SqlMonitorStateRepository` (`monitor_states` table, migration
+  `e11783af3b0a`; `MonitorStatus` stored as text, no secrets so no `SecretBox`).
+  `CheckService.run_check` gained an **optional** `states` dep: after recording the
+  `CheckResult` it loads the state (or `initial_state(monitor_id,
+  result.finished_at)`), folds via `advance_state(...)` with the monitor's
+  thresholds, and `save`s — on **every** path incl. transport-failure results (a
+  `ProbeError` result advances the counters as a failure). The returned
+  `StateTransition` is **not consumed yet** (S8 event / S9 alert). Wired into both
+  composition roots (`deps.py` `get_check_service`, `scheduler.py` `build_runner`).
+- **Prior phase:** **S7.1 complete** — pure state + stats logic (S7 split into
+  S7.1/S7.2/S7.3). `domain/logic/state.py` — `initial_state`, `advance_state`
+  (folds a `CheckResult`: counters + `last_check_at` bump every check,
+  `status`/`since` flip only on a threshold crossing), `transition_between`;
+  `domain/logic/stats.py` — `compute_stats` (window-filtered uptime %, nearest-rank
+  p50/p95/p99). Value objects `MonitorStatus`/`StatsWindow`/`StateTransition`/
+  `Stats` + the `MonitorState` entity (SPEC §4).
+- **Earlier phase:** **S6 complete** — scheduler runner (PLAN D21). A worker
   (`python -m sentinel.infrastructure.scheduler` / `just worker`) loops over the
   pure `select_due_monitors` decision: each cycle it lists monitors, selects the
   **enabled, due** ones (per-monitor **jitter**, **skip-don't-backfill**), probes
@@ -44,18 +50,18 @@
   state is an in-memory last-run map **seeded on startup from each monitor's most
   recent `CheckResult`** so a restart resumes the cadence rather than re-probing all
   at once (no new `last_check_at` column — `MonitorState` is S7).
-- **Last green commit:** S6 (`feat(scheduler): due-selection + jitter + async
-  runner with heartbeat`); S7.1 staged.
-- **Test suite:** `just test` (no DB) → **280 passed, 23 skipped** (+16 from S7.1).
-  With `TEST_DATABASE_URL=…/sentinel_test` → **303 passed** (no skips). New: `tests/
-  unit/domain/test_state.py` (8 — initial-unknown, first-fail/success flip at
-  threshold 1, failure-threshold-2 needs two, recovery-threshold-2 needs two,
-  success/failure reset runs, staying-up no-transition + since unchanged,
-  transition_between none when unchanged), `tests/unit/domain/test_stats.py` (8 —
-  all-success percentiles, failures + transport-fail-excluded-from-percentiles,
-  outside-window excluded, cutoff inclusive, empty→zeros/None, all-transport-fail
-  None percentiles, 7d/30d include older, 99.79 rounding).
-- **Schema/migrations:** head **`a7c3f1e9d2b4`** (unchanged — S6 added no tables).
+- **Last green commit:** S7.1 (`feat(state): pure state-transition + stats logic +
+  value objects`); S7.2 staged.
+- **Test suite:** `just test` (no DB) → **287 passed, 27 skipped** (+7 from S7.2).
+  With `TEST_DATABASE_URL=…/sentinel_test` → **314 passed** (no skips; `alembic
+  upgrade head` from base verified — creates `monitor_states`). New: `tests/
+  integration/test_monitor_state_repository.py` (4 × {memory, pg} — get-missing→None,
+  full-field round-trip, save-is-upsert-one-row, unknown/null-last_check round-trip),
+  `tests/integration/test_check_pipeline_state.py` (3 — fail×2→DOWN then success→UP
+  advancing counters/since/last_check across a moving clock, transport-failure
+  advances as a failure, no-state-repo→still probes/records).
+- **Schema/migrations:** head **`e11783af3b0a`** (S7.2 — `create monitor_states
+  table`, down_revision `a7c3f1e9d2b4`).
 - **Deps:** unchanged.
 - **Config:** **+`heartbeat_url`, `scheduler_poll_seconds`,
   `scheduler_max_concurrency`** (see `.env.example` candidates).
@@ -63,21 +69,21 @@
 
 ## Next action
 
-➡️ **Begin S7.2 — `MonitorState` persistence + wire into the check pipeline.**
-Add the `MonitorStateRepository` port (`get(monitor_id) -> MonitorState | None`,
-`save(state)` upsert — one row per monitor) + in-memory fake +
-`SqlMonitorStateRepository` + a `monitor_states` table & Alembic migration. Then
-wire the pure fold into `CheckService.run_check`: after recording the
-`CheckResult`, load the state (or `initial_state(monitor_id, result.finished_at)`),
-`advance_state(...)` with the monitor's thresholds, and `save` it. The returned
-`StateTransition` is not consumed yet (S8 emits the event, S9 fires the alert) —
-for S7.2 just persist the new state. Write the failing integration test first
-(a sequence of checks advances + persists status/since/counters). See
-**sentinel-architecture** (add-a-capability recipe) and **sentinel-probe-and-
-assertions**. Then **S7.3** — `GET /monitors/{id}/results?from&to&limit` (extend
-the repo's `list_for_monitor` with a from/to window), `GET /monitors/{id}/stats?
-window=` (raw `compute_stats` + status/since from `MonitorState`), and the list
-`?include=summary` (status + 24h uptime). (Rollups/long-window stats are S7a.)
+➡️ **Begin S7.3 — read endpoints for history + stats + list summary.** Write the
+failing API tests first (via `httpx.ASGITransport` with in-memory fakes, per D13),
+then add: `GET /monitors/{id}/results?from&to&limit` — extend
+`CheckResultRepository.list_for_monitor` with an optional `from`/`to` window (the
+in-memory fake + `SqlCheckResultRepository` both; window filter on `finished_at`,
+still newest-first, bounded by `limit`); `GET /monitors/{id}/stats?window=24h|7d|30d`
+— assemble the §5 stats response from raw `compute_stats(results, window, now)`
+**plus `status`/`since` loaded from the `MonitorStateRepository`** (`Stats` omits
+those by design, D22); and the monitor list `?include=summary` — attach each
+monitor's `status` + 24h uptime (one `MonitorState.get` + a 24h `compute_stats` per
+monitor; N+1 is acceptable at v1 scale, note it). Map `window` to the `StatsWindow`
+enum; unknown window → `validation_error` (422). All windows computed from raw
+`CheckResult`s in S7 — **long-window rollups are S7a**. See **sentinel-architecture**
+(add-a-capability recipe) + **sentinel-probe-and-assertions**. The `StateTransition`
+from `advance_state` stays unconsumed until S8 (event) / S9 (alert).
 
 ---
 
@@ -98,7 +104,7 @@ window=` (raw `compute_stats` + status/since from `MonitorState`), and the list
 - [x] **S6** Scheduler runner
 - [ ] **S7** State, stats & history _(split — see log)_
   - [x] **S7.1** Pure state + stats logic + value objects/entity
-  - [ ] **S7.2** `MonitorState` persistence (repo + migration) + wire into check pipeline
+  - [x] **S7.2** `MonitorState` persistence (repo + migration) + wire into check pipeline
   - [ ] **S7.3** `GET /results`, `GET /stats`, `?include=summary` endpoints
 - [ ] **S7a** Rollups & long-window stats
 - [ ] **S8** SSE live events
@@ -126,6 +132,65 @@ window=` (raw `compute_stats` + status/since from `MonitorState`), and the list
 > Commit(s): <conventional commit subject lines>
 > Resume hint: <the very next concrete step>
 > ```
+
+### S7.2 — `MonitorState` persistence + wire into check pipeline  · 2026-07-14
+Done: A monitor's up/down rollup now persists and advances automatically. New
+`MonitorStateRepository` port (`get(monitor_id) -> MonitorState | None`,
+`save(state)` upsert — one row per monitor, keyed by `monitor_id`) with an
+in-memory fake (`InMemoryMonitorStateRepository`) and a `SqlMonitorStateRepository`
+mapping `MonitorState`↔`MonitorStateRow` (`MonitorStatus` stored as text, `since`/
+`last_check_at` timestamptz; **no secrets → no `SecretBox`**). New `monitor_states`
+table + Alembic migration `e11783af3b0a` (`upgrade head` from base verified clean).
+`CheckService` gained an **optional** `states` dep (mirrors the optional auth deps,
+D20 — keeps the manual-check path + pre-S7.2 tests green unchanged). `run_check`
+was refactored to `_probe_and_record(monitor) -> CheckResult` then
+`_advance_state(monitor, result)`, so **every** result — success, failed-assertion,
+and transport-failure (`ProbeError`) — folds into the state: `initial_state(id,
+result.finished_at)` on first check, then `advance_state(...)` with the monitor's
+`failure_threshold`/`recovery_threshold`, then `save`. Counters + `last_check_at`
+bump every check; `status`/`since` flip only on a confirmed threshold crossing. The
+`StateTransition` is deliberately **not consumed yet** (S8 emits `status_changed`,
+S9 fires the alert). Wired into both composition roots (`deps.py` `get_check_service`
+and `scheduler.py` `build_runner`), so scheduled + manual checks both track state.
+Tests: `tests/integration/test_monitor_state_repository.py` (4 × {memory, pg} =
+8 — get-missing→None, full-field round-trip, save-is-upsert-one-row-per-monitor,
+unknown-state/null-last_check round-trip); `tests/integration/test_check_pipeline_
+state.py` (3 — fail×2→confirmed DOWN then success→UP with counters/`since`/
+`last_check_at` advancing across a moving `FixedClock`; transport-failure advances
+as a failure; no-state-repo→still probes + records, state untouched). Suite:
+**287 passed / 27 skipped** (no DB); **314 with PG** (`sentinel_test`). ruff + mypy
+strict clean. App boots; `get_check_service` + `build_runner` both construct with
+the state repo wired (no DB opened at import).
+Decisions: none new (under **D22**). Notable choices: `states` is an **optional**
+`CheckService` dep (parity with the optional auth deps, D20) so the manual-check
+path and every existing `CheckService(...)` call site stay green without edits;
+state advances on the transport-failure path too (a down endpoint counts toward the
+failure threshold, SPEC §3.8); `MonitorState` carries no secrets so the SQL repo
+needs no `SecretBox`; `save` returns the passed-in entity (no server-side mutation
+to reflect back). Caveat surfaced: integration repo tests set up schema via
+`create_all`/`drop_all` (bypassing alembic) and leave `alembic_version` stamped, so
+`alembic revision --autogenerate` against a used test DB mis-detects every table as
+new — the migration was hand-trimmed to just `monitor_states` and verified via a
+clean `upgrade head` from base (consistent with S1's autogenerate-drift follow-up).
+Files: `src/sentinel/domain/ports.py` (+`MonitorStateRepository`, +`MonitorState`
+import), `src/sentinel/domain/logic/state.py` (unchanged — reused),
+`src/sentinel/infrastructure/db/models.py` (+`MonitorStateRow`),
+`src/sentinel/infrastructure/db/monitor_state_repository.py` (new),
+`alembic/versions/e11783af3b0a_create_monitor_states_table.py` (new),
+`src/sentinel/application/check_service.py` (optional `states` dep + `_advance_state`
++ `run_check` refactor), `src/sentinel/interface/api/deps.py` (wire state repo),
+`src/sentinel/infrastructure/scheduler.py` (wire state repo into `build_runner`),
+`tests/support/fakes.py` (+`InMemoryMonitorStateRepository`),
+`tests/integration/{test_monitor_state_repository,test_check_pipeline_state}.py` (new).
+Follow-ups / parked: the `/results` (from/to window) + `/stats` + `?include=summary`
+endpoints are S7.3; long-window stats from rollups is S7a; the `StateTransition` is
+consumed in S8/S9. Consider an autogenerate-drift guard (or stamping the test DB via
+alembic) so future autogen isn't misleading — parked (also noted in S1).
+Commit(s): `feat(state): MonitorState persistence + fold into check pipeline (S7.2)`.
+Resume hint: start S7.3 — write the failing API tests (`GET /monitors/{id}/results`
+with from/to, `GET /monitors/{id}/stats?window=`, list `?include=summary`) before
+extending `list_for_monitor` with a from/to window and assembling the stats response
+from `compute_stats` + `MonitorState` (status/since).
 
 ### S7.1 — Pure state + stats logic + value objects/entity  · 2026-07-14
 Done: The I/O-free heart of SPEC §3.8 (state) and §3.5 (stats) is in place — no

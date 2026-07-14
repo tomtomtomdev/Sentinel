@@ -21,12 +21,14 @@ from sentinel.domain.entities import AuthSource, CheckResult, Monitor
 from sentinel.domain.errors import NotFoundError, ProbeError
 from sentinel.domain.logic.assertions import evaluate_assertions
 from sentinel.domain.logic.auth import apply_injection
+from sentinel.domain.logic.state import advance_state, initial_state
 from sentinel.domain.ports import (
     AuthSourceRepository,
     CheckResultRepository,
     Clock,
     HttpProbe,
     MonitorRepository,
+    MonitorStateRepository,
 )
 from sentinel.domain.value_objects import AssertionResult, ErrorKind, ProbeRequest, ProbeResponse
 
@@ -39,6 +41,7 @@ class CheckService:
         results: CheckResultRepository,
         probe: HttpProbe,
         clock: Clock,
+        states: MonitorStateRepository | None = None,
         auth_sources: AuthSourceRepository | None = None,
         auth: AuthTokenService | None = None,
     ) -> None:
@@ -46,6 +49,7 @@ class CheckService:
         self._results = results
         self._probe = probe
         self._clock = clock
+        self._states = states
         self._auth_sources = auth_sources
         self._auth = auth
 
@@ -54,6 +58,11 @@ class CheckService:
         if monitor is None:
             raise NotFoundError(f"monitor {monitor_id} not found")
 
+        result = await self._probe_and_record(monitor)
+        await self._advance_state(monitor, result)
+        return result
+
+    async def _probe_and_record(self, monitor: Monitor) -> CheckResult:
         source = await self._load_auth_source(monitor)
         started_at = self._clock.now()
         base_request = _to_probe_request(monitor)
@@ -79,6 +88,25 @@ class CheckService:
             assertion_results=assertion_results,
             finished_at=finished_at,
         )
+
+    async def _advance_state(self, monitor: Monitor, result: CheckResult) -> None:
+        """Fold the result into the monitor's persisted `MonitorState` (SPEC §3.8).
+        Every check bumps the counters + `last_check_at`; `status`/`since` flip only
+        on a threshold crossing. No-op when no state repository is wired (e.g. the
+        pre-S7.2 manual-check path). The confirmed `StateTransition` is not consumed
+        yet — S8 emits the event and S9 fires the alert."""
+        if self._states is None:
+            return
+        current = await self._states.get(monitor.id) or initial_state(
+            monitor.id, result.finished_at
+        )
+        updated = advance_state(
+            current,
+            result,
+            failure_threshold=monitor.failure_threshold,
+            recovery_threshold=monitor.recovery_threshold,
+        )
+        await self._states.save(updated)
 
     async def _load_auth_source(self, monitor: Monitor) -> AuthSource | None:
         if monitor.auth_source_id is None or self._auth_sources is None or self._auth is None:
