@@ -22,6 +22,12 @@ _WINDOW_DURATIONS: dict[StatsWindow, timedelta] = {
 }
 
 
+def window_start(window: StatsWindow, now: datetime) -> datetime:
+    """The inclusive lower bound of `window` ending at `now`. Shared so a caller
+    can fetch exactly the window's raw results before folding them here."""
+    return now - _WINDOW_DURATIONS[window]
+
+
 def compute_stats(results: list[CheckResult], window: StatsWindow, now: datetime) -> Stats:
     """Uptime %, check/failure counts, and p50/p95/p99 latency over `window`
     ending at `now`.
@@ -32,7 +38,7 @@ def compute_stats(results: list[CheckResult], window: StatsWindow, now: datetime
     in-window results, `uptime_pct` is `0.0` — callers treat `checks == 0` as
     "no data" (there is no meaningful uptime without checks).
     """
-    cutoff = now - _WINDOW_DURATIONS[window]
+    cutoff = window_start(window, now)
     in_window = [r for r in results if cutoff <= r.finished_at <= now]
 
     checks = len(in_window)

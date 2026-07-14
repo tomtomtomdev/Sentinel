@@ -20,7 +20,24 @@
 
 ## Current state
 
-- **Phase:** **S7.2 complete** — `MonitorState` persistence + the check pipeline
+- **Phase:** **S7.3 complete — S7 (State, stats & history) is DONE.** The three
+  §3.5 read endpoints ship, all through a new `StatsService`
+  (`application/stats_service.py`) that orchestrates existing ports (no rules):
+  `GET /monitors/{id}/results?from&to&limit` (windowed, newest-first history, 404
+  on unknown monitor), `GET /monitors/{id}/stats?window=24h|7d|30d` (pure
+  `compute_stats` joined with `status`/`since` from `MonitorStateRepository` into a
+  `StatsView` → §5 shape `{window,checks,failures,uptime_pct,latency_ms:{p50,p95,
+  p99},status,since}`; unknown `window` → 422, unknown monitor → 404), and
+  `GET /monitors?include=summary` (a `MonitorSummary` per monitor —
+  status/since/last_check_at + 24h uptime_pct/latency_p95_ms/checks; **N+1** by
+  design, acceptable at v1). `CheckResultRepository.list_for_monitor` gained
+  optional `since`/`until` (inclusive `finished_at` bounds) + `limit: int | None`
+  (`None` = no cap); the stats path fetches the whole window unbounded and
+  `compute_stats` re-filters (long-window rollups are **S7a**). New public
+  `window_start(window, now)` helper in `domain/logic/stats.py`. Wired
+  `get_stats_service` in `deps.py`. The `StateTransition` from `advance_state`
+  remains **unconsumed** until S8 (event) / S9 (alert).
+- **Prior phase:** **S7.2 complete** — `MonitorState` persistence + the check pipeline
   now advances it. New `MonitorStateRepository` port (`get(monitor_id) ->
   MonitorState | None`, `save(state)` upsert — one row per monitor) with an
   in-memory fake + `SqlMonitorStateRepository` (`monitor_states` table, migration
@@ -29,17 +46,15 @@
   `CheckResult` it loads the state (or `initial_state(monitor_id,
   result.finished_at)`), folds via `advance_state(...)` with the monitor's
   thresholds, and `save`s — on **every** path incl. transport-failure results (a
-  `ProbeError` result advances the counters as a failure). The returned
-  `StateTransition` is **not consumed yet** (S8 event / S9 alert). Wired into both
-  composition roots (`deps.py` `get_check_service`, `scheduler.py` `build_runner`).
-- **Prior phase:** **S7.1 complete** — pure state + stats logic (S7 split into
+  `ProbeError` result advances the counters as a failure).
+- **Earlier phase:** **S7.1 complete** — pure state + stats logic (S7 split into
   S7.1/S7.2/S7.3). `domain/logic/state.py` — `initial_state`, `advance_state`
   (folds a `CheckResult`: counters + `last_check_at` bump every check,
   `status`/`since` flip only on a threshold crossing), `transition_between`;
   `domain/logic/stats.py` — `compute_stats` (window-filtered uptime %, nearest-rank
   p50/p95/p99). Value objects `MonitorStatus`/`StatsWindow`/`StateTransition`/
   `Stats` + the `MonitorState` entity (SPEC §4).
-- **Earlier phase:** **S6 complete** — scheduler runner (PLAN D21). A worker
+- **Older phase:** **S6 complete** — scheduler runner (PLAN D21). A worker
   (`python -m sentinel.infrastructure.scheduler` / `just worker`) loops over the
   pure `select_due_monitors` decision: each cycle it lists monitors, selects the
   **enabled, due** ones (per-monitor **jitter**, **skip-don't-backfill**), probes
@@ -50,18 +65,18 @@
   state is an in-memory last-run map **seeded on startup from each monitor's most
   recent `CheckResult`** so a restart resumes the cadence rather than re-probing all
   at once (no new `last_check_at` column — `MonitorState` is S7).
-- **Last green commit:** S7.1 (`feat(state): pure state-transition + stats logic +
-  value objects`); S7.2 staged.
-- **Test suite:** `just test` (no DB) → **287 passed, 27 skipped** (+7 from S7.2).
-  With `TEST_DATABASE_URL=…/sentinel_test` → **314 passed** (no skips; `alembic
-  upgrade head` from base verified — creates `monitor_states`). New: `tests/
-  integration/test_monitor_state_repository.py` (4 × {memory, pg} — get-missing→None,
-  full-field round-trip, save-is-upsert-one-row, unknown/null-last_check round-trip),
-  `tests/integration/test_check_pipeline_state.py` (3 — fail×2→DOWN then success→UP
-  advancing counters/since/last_check across a moving clock, transport-failure
-  advances as a failure, no-state-repo→still probes/records).
-- **Schema/migrations:** head **`e11783af3b0a`** (S7.2 — `create monitor_states
-  table`, down_revision `a7c3f1e9d2b4`).
+- **Last green commit:** S7.2 (`feat(state): MonitorState persistence + fold into
+  check pipeline (S7.2)`); S7.3 staged.
+- **Test suite:** `just test` (no DB) → **302 passed, 30 skipped** (+15 from S7.3).
+  With `TEST_DATABASE_URL=…/sentinel_test` → **332 passed** (no skips). New: `tests/
+  integration/test_monitor_stats_api.py` (12 — results newest-first / from-to window
+  / limit / 404; stats match a known fixture incl. status+since / window selects the
+  range / no-data→unknown / unknown-window→422 / unknown-monitor→404; list
+  `?include=summary` attaches status+24h uptime+p95+last-check / unknown→"no data" /
+  plain list has `summary=null`), plus 3 `CheckResultRepository` contract tests
+  (`test_check_result_repository.py`: none-limit→all, since/until window inclusive,
+  since composes with limit) × {memory, pg}.
+- **Schema/migrations:** head **`e11783af3b0a`** (unchanged — S7.3 added no columns).
 - **Deps:** unchanged.
 - **Config:** **+`heartbeat_url`, `scheduler_poll_seconds`,
   `scheduler_max_concurrency`** (see `.env.example` candidates).
@@ -69,21 +84,20 @@
 
 ## Next action
 
-➡️ **Begin S7.3 — read endpoints for history + stats + list summary.** Write the
-failing API tests first (via `httpx.ASGITransport` with in-memory fakes, per D13),
-then add: `GET /monitors/{id}/results?from&to&limit` — extend
-`CheckResultRepository.list_for_monitor` with an optional `from`/`to` window (the
-in-memory fake + `SqlCheckResultRepository` both; window filter on `finished_at`,
-still newest-first, bounded by `limit`); `GET /monitors/{id}/stats?window=24h|7d|30d`
-— assemble the §5 stats response from raw `compute_stats(results, window, now)`
-**plus `status`/`since` loaded from the `MonitorStateRepository`** (`Stats` omits
-those by design, D22); and the monitor list `?include=summary` — attach each
-monitor's `status` + 24h uptime (one `MonitorState.get` + a 24h `compute_stats` per
-monitor; N+1 is acceptable at v1 scale, note it). Map `window` to the `StatsWindow`
-enum; unknown window → `validation_error` (422). All windows computed from raw
-`CheckResult`s in S7 — **long-window rollups are S7a**. See **sentinel-architecture**
-(add-a-capability recipe) + **sentinel-probe-and-assertions**. The `StateTransition`
-from `advance_state` stays unconsumed until S8 (event) / S9 (alert).
+➡️ **Begin S7a — rollups & long-window stats.** Write failing unit tests first for
+the two pure functions, then wire them: `fold_results_into_rollup(rollup | None,
+results) -> CheckRollup` (idempotent **per hour bucket** — re-folding a bucket must
+not double-count; test parity vs raw `compute_stats` within tolerance) and
+`aggregate_rollups(rollups, window) -> Stats` (weighted p50/p95/p99 across buckets,
+using `latency_sum_ms` for the mean and the per-bucket percentiles as sketches —
+SPEC §4 `CheckRollup`). Add the `CheckRollup` entity + `CheckRollupRepository` port
+(fake + `SqlCheckRollupRepository`, `(monitor_id, bucket_start)` unique) + Alembic
+migration; fold into rollups as checks complete in `CheckService.run_check` (a
+second optional dep, like `states`). Then switch `StatsService` so **7d/30d** windows
+are served from `aggregate_rollups` while **24h** stays raw (SPEC §3.5, §6, PLAN D7).
+Rollup retention (13mo) is separate from raw pruning (that lands with S10). See
+**sentinel-architecture** (add-a-capability recipe) + **sentinel-probe-and-assertions**.
+The `StateTransition` from `advance_state` still stays unconsumed until S8 / S9.
 
 ---
 
@@ -102,10 +116,10 @@ from `advance_state` stays unconsumed until S8 (event) / S9 (alert).
   - [x] **S5b.3** Auth-source CRUD + manual-refresh API
   - [x] **S5b.4** Probe-pipeline injection + proactive/reactive refresh + single-flight
 - [x] **S6** Scheduler runner
-- [ ] **S7** State, stats & history _(split — see log)_
+- [x] **S7** State, stats & history _(split — see log)_
   - [x] **S7.1** Pure state + stats logic + value objects/entity
   - [x] **S7.2** `MonitorState` persistence (repo + migration) + wire into check pipeline
-  - [ ] **S7.3** `GET /results`, `GET /stats`, `?include=summary` endpoints
+  - [x] **S7.3** `GET /results`, `GET /stats`, `?include=summary` endpoints
 - [ ] **S7a** Rollups & long-window stats
 - [ ] **S8** SSE live events
 - [ ] **S9** Alert channels + notify (cooldown + flap damping)
@@ -132,6 +146,69 @@ from `advance_state` stays unconsumed until S8 (event) / S9 (alert).
 > Commit(s): <conventional commit subject lines>
 > Resume hint: <the very next concrete step>
 > ```
+
+### S7.3 — `/results`, `/stats`, `?include=summary` endpoints  · 2026-07-14
+Done: The §3.5 read model ships and **S7 is complete**. Three endpoints, all
+orchestrated by a new `StatsService` (`application/stats_service.py`, ports only, no
+rules): `GET /monitors/{id}/results?from&to&limit` (windowed, newest-first history;
+`from`/`to` map to inclusive `finished_at` bounds via `Query(alias="from")`→`since`/
+`until`; `limit` bounded 1..1000; unknown monitor → 404); `GET /monitors/{id}/stats?
+window=24h|7d|30d` (a `StatsView` = pure `compute_stats` joined with `status`/`since`
+from `MonitorStateRepository` → §5 shape `{window,checks,failures,uptime_pct,
+latency_ms:{p50,p95,p99},status,since}`; typed `StatsWindow` param so an unknown
+window becomes a `RequestValidationError` → `validation_error` 422 via the existing
+handler, D12; unknown monitor → 404; no state/no checks → status `unknown`, since
+`null`, uptime `0.0`, percentiles `null`); and `GET /monitors?include=summary`
+(attaches a `MonitorSummary` DTO per monitor: `status`, `since`, `last_check_at`, 24h
+`uptime_pct`, 24h `latency_p95_ms`, `checks` — **N+1** by design, one
+`MonitorState.get` + one 24h `compute_stats` per monitor, acceptable at v1; the
+`summary` field is `null` without the flag). `CheckResultRepository.list_for_monitor`
+gained optional `since`/`until` (inclusive `finished_at`) + `limit: int | None`
+(`None` = no cap) on the port, the in-memory fake, and `SqlCheckResultRepository`
+(conditional `.where()` + `.limit(None)`); the stats path fetches the **whole window
+unbounded** and `compute_stats` re-filters (S7 computes from raw; long-window rollups
+are S7a). New public `window_start(window, now)` helper in `domain/logic/stats.py`
+keeps the window math DRY. New DTOs (`schemas.py`): `StatsResponse`/
+`LatencyPercentilesDTO`/`MonitorSummaryDTO`, and `MonitorResponse` gained an optional
+`summary`. Wired `get_stats_service` in `deps.py`. The `StateTransition` from
+`advance_state` remains **unconsumed** (S8 event / S9 alert).
+Tests: `tests/integration/test_monitor_stats_api.py` (12, via `httpx.ASGITransport`
+with in-memory fakes + `dependency_overrides`, D13 — results newest-first / from-to
+window inclusive / limit / 404; stats match a 10-check fixture [9 latencies 100..900
++ 1 timeout → uptime 90.0, nearest-rank p50=500/p95=p99=900] with status+since /
+window selects 24h-vs-7d / no-data→unknown / unknown-window→422 / unknown-monitor→404;
+summary attaches status+since+last_check+uptime+p95+checks / no-state→"no data" /
+plain list `summary=null`); 3 new `CheckResultRepository` contract tests
+(none-limit→all, since/until window inclusive, since composes with limit) × {memory,
+pg}. `test_monitor_api.py` fixture now also overrides `get_stats_service` (the list
+route composes it). Suite: **302 passed / 30 skipped** (no DB); **332 with PG**
+(`sentinel_test`; the new window/`limit=None` SQL verified against real Postgres).
+ruff + mypy strict clean. App boots (`/api/v1/health` 200).
+Decisions: **D23** (S7.3 read model via `StatsService`; `list_for_monitor` gains a
+`[since, until]` window + unbounded `limit`; summary richer than the SPEC minimum to
+feed the `docs/design/` dashboard; typed-enum window → 422; N+1 summaries;
+`window_start` helper) added to PLAN §7.
+Files: `src/sentinel/application/stats_service.py` (new — `StatsService` +
+`StatsView`/`MonitorSummary`), `src/sentinel/domain/logic/stats.py`
+(+`window_start`), `src/sentinel/domain/ports.py` (`list_for_monitor` since/until/
+`limit|None`), `src/sentinel/infrastructure/db/check_result_repository.py` (window
+filter), `src/sentinel/interface/api/schemas.py` (+stats/summary DTOs, `MonitorResponse.
+summary`), `src/sentinel/interface/api/monitors.py` (+`/results`, `/stats`,
+`?include=summary`), `src/sentinel/interface/api/deps.py` (+`get_stats_service`),
+`tests/support/fakes.py` (fake `list_for_monitor` window),
+`tests/integration/{test_monitor_stats_api.py (new), test_check_result_repository.py,
+test_monitor_api.py}`.
+Follow-ups / parked: **7d/30d are computed from raw** unbounded scans — S7a replaces
+them with hourly rollups (`fold_results_into_rollup` + `aggregate_rollups` +
+`CheckRollup`/repo/migration, and fold in `run_check`). The `?include=summary` N+1 is
+fine at v1 but would batch nicely once rollups exist. Summary omits a "group"/tag
+rollup (dashboard groups are a frontend concern, S11). `from > to` yields an empty
+list (not an error, by design).
+Commit(s): `feat(stats): results/stats/summary read endpoints via StatsService (S7.3)`.
+Resume hint: start S7a — write failing unit tests for `fold_results_into_rollup`
+(idempotent per hour bucket) + `aggregate_rollups` (weighted percentiles, parity vs
+raw within tolerance) before the `CheckRollup` entity/repo/migration, folding into
+`run_check`, and switching `StatsService` to serve 7d/30d from rollups.
 
 ### S7.2 — `MonitorState` persistence + wire into check pipeline  · 2026-07-14
 Done: A monitor's up/down rollup now persists and advances automatically. New

@@ -13,6 +13,7 @@ from sentinel.application.auth_source_service import AuthSourceService
 from sentinel.application.auth_token_service import AuthTokenService
 from sentinel.application.check_service import CheckService
 from sentinel.application.monitor_service import MonitorService
+from sentinel.application.stats_service import StatsService
 from sentinel.config import get_settings
 from sentinel.domain.ports import AuthSourceRepository, Clock, HttpProbe, SecretBox, TokenStore
 from sentinel.infrastructure.clock import SystemClock
@@ -79,6 +80,17 @@ def get_http_probe() -> HttpProbe:
     """One shared probe (and its pooled `AsyncClient`) for the process. Built
     lazily so importing the app opens no client; the event loop binds on first use."""
     return HttpxProbe()
+
+
+def get_stats_service() -> StatsService:
+    factory = get_session_factory()
+    clock = get_clock()
+    return StatsService(
+        monitors=SqlMonitorRepository(factory, clock=clock, secret_box=get_secret_box()),
+        results=SqlCheckResultRepository(factory),
+        states=SqlMonitorStateRepository(factory),
+        clock=clock,
+    )
 
 
 def get_check_service() -> CheckService:

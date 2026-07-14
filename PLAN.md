@@ -543,6 +543,39 @@ stable (after S7), against a mock server if needed.
   belong to `MonitorState` and the §5 stats response is assembled from both at the
   endpoint (S7.3).
 
+- **D23 — S7.3 read endpoints go through a `StatsService` read model;
+  `list_for_monitor` gains a `[since, until]` window + unbounded `limit`; the list
+  summary is richer than the SPEC minimum to feed the dashboard.** The three §3.5
+  read endpoints (`GET /monitors/{id}/results`, `/stats`, `?include=summary`) are
+  orchestration over existing ports, so they live in one application use case
+  (`application/stats_service.py`) rather than in the routers: `history` (windowed,
+  newest-first, 404 on unknown monitor), `stats` (a `StatsView` = pure
+  `compute_stats` joined with `status`/`since` from `MonitorStateRepository`, since
+  `Stats` omits those by D22), and `summaries` (a `MonitorSummary` per monitor).
+  `CheckResultRepository.list_for_monitor` was extended with optional
+  `since`/`until` (inclusive `finished_at` bounds) and `limit: int | None` where
+  `None` means *no cap* — the stats path fetches the **whole window unbounded**
+  (`window_start(window, now)`→`now`) and `compute_stats` re-filters; a public
+  `window_start` helper in `domain/logic/stats.py` keeps the window math DRY. This
+  is the documented S7 "compute from raw" behaviour; **S7a** replaces the unbounded
+  7d/30d scan with hourly rollups (SPEC §6, D7). `?include=summary` is **N+1 by
+  design** (one `MonitorState.get` + one 24h `compute_stats` per monitor) —
+  acceptable at v1 scale and noted in code. The summary DTO carries `status`,
+  `since`, `last_check_at`, 24h `uptime_pct`, 24h `latency_p95_ms`, and `checks`
+  (SPEC §3.5 only mandates "status + 24h uptime", but the hi-fi dashboard cards in
+  `docs/design/` render p95 latency + "last checked", so the extra fields are
+  built now rather than bolted on in S11); `checks == 0` disambiguates "no data"
+  from a genuine 0% uptime (the D22 empty-window convention). The stats `window`
+  query param is typed as the `StatsWindow` enum, so an unknown value becomes a
+  `RequestValidationError` → the §5 `validation_error` (422) via the existing
+  handler (D12) — no bespoke validation. `results` returns a bare JSON array
+  (D13); `from`/`to` map to `since`/`until` via a `Query(alias="from")` (avoids the
+  `from` keyword); `limit` is bounded `1..1000`. Because the monitor **list** route
+  now composes `StatsService` for the summary branch, its API tests override both
+  `get_monitor_service` and `get_stats_service` (the real composition root builds a
+  `SecretBox` and would fail fast without `SECRET_KEY`). The `StateTransition` from
+  `advance_state` stays unconsumed until S8/S9.
+
 _Append new decisions here as `Dn — <decision>: <why>` when slices force a choice._
 
 ---

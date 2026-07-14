@@ -74,8 +74,21 @@ class InMemoryCheckResultRepository:
         self._store.append(stored)
         return copy.deepcopy(stored)
 
-    async def list_for_monitor(self, monitor_id: UUID, *, limit: int = 100) -> list[CheckResult]:
-        matches = [r for r in self._store if r.monitor_id == monitor_id]
+    async def list_for_monitor(
+        self,
+        monitor_id: UUID,
+        *,
+        since: datetime | None = None,
+        until: datetime | None = None,
+        limit: int | None = 100,
+    ) -> list[CheckResult]:
+        matches = [
+            r
+            for r in self._store
+            if r.monitor_id == monitor_id
+            and (since is None or r.finished_at >= since)
+            and (until is None or r.finished_at <= until)
+        ]
         matches.sort(key=lambda r: r.finished_at, reverse=True)
         return [copy.deepcopy(r) for r in matches[:limit]]
 

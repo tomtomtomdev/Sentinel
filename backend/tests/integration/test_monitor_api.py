@@ -15,10 +15,16 @@ import httpx
 import pytest
 
 from sentinel.application.monitor_service import MonitorService
+from sentinel.application.stats_service import StatsService
 from sentinel.domain.logic.redaction import MASK
-from sentinel.interface.api.deps import get_monitor_service
+from sentinel.interface.api.deps import get_monitor_service, get_stats_service
 from sentinel.interface.main import create_app
-from tests.support.fakes import FixedClock, InMemoryMonitorRepository
+from tests.support.fakes import (
+    FixedClock,
+    InMemoryCheckResultRepository,
+    InMemoryMonitorRepository,
+    InMemoryMonitorStateRepository,
+)
 
 CLOCK_NOW = datetime(2026, 6, 26, 9, 0, tzinfo=UTC)
 
@@ -41,9 +47,18 @@ MONITORS = "/api/v1/monitors"
 
 @pytest.fixture
 async def api() -> AsyncIterator[tuple[httpx.AsyncClient, InMemoryMonitorRepository]]:
-    repo = InMemoryMonitorRepository(clock=FixedClock(CLOCK_NOW))
+    clock = FixedClock(CLOCK_NOW)
+    repo = InMemoryMonitorRepository(clock=clock)
     app = create_app()
     app.dependency_overrides[get_monitor_service] = lambda: MonitorService(repo)
+    # The list route composes StatsService for `?include=summary`; wire a fake-backed
+    # one over the same monitor repo so plain-list tests resolve it without a DB.
+    app.dependency_overrides[get_stats_service] = lambda: StatsService(
+        monitors=repo,
+        results=InMemoryCheckResultRepository(),
+        states=InMemoryMonitorStateRepository(),
+        clock=clock,
+    )
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         yield client, repo

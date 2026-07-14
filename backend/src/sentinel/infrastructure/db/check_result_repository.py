@@ -4,6 +4,7 @@ stored as JSONB / text. Listing is newest-first and bounded by `limit`."""
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 from uuid import UUID
 
@@ -71,13 +72,20 @@ class SqlCheckResultRepository:
             await session.refresh(row)
             return _to_entity(row)
 
-    async def list_for_monitor(self, monitor_id: UUID, *, limit: int = 100) -> list[CheckResult]:
+    async def list_for_monitor(
+        self,
+        monitor_id: UUID,
+        *,
+        since: datetime | None = None,
+        until: datetime | None = None,
+        limit: int | None = 100,
+    ) -> list[CheckResult]:
         async with self._session_factory() as session:
-            stmt = (
-                select(CheckResultRow)
-                .where(col(CheckResultRow.monitor_id) == monitor_id)
-                .order_by(col(CheckResultRow.finished_at).desc())
-                .limit(limit)
-            )
+            stmt = select(CheckResultRow).where(col(CheckResultRow.monitor_id) == monitor_id)
+            if since is not None:
+                stmt = stmt.where(col(CheckResultRow.finished_at) >= since)
+            if until is not None:
+                stmt = stmt.where(col(CheckResultRow.finished_at) <= until)
+            stmt = stmt.order_by(col(CheckResultRow.finished_at).desc()).limit(limit)
             result = await session.execute(stmt)
             return [_to_entity(row) for row in result.scalars().all()]

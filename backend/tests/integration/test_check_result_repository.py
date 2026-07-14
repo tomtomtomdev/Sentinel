@@ -126,3 +126,42 @@ async def test_list_respects_limit(repo: CheckResultRepository) -> None:
         await repo.add(sample_result(finished_at=FINISHED + timedelta(minutes=i)))
     listed = await repo.list_for_monitor(MONITOR_ID, limit=3)
     assert len(listed) == 3
+
+
+async def test_list_none_limit_returns_all(repo: CheckResultRepository) -> None:
+    for i in range(5):
+        await repo.add(sample_result(finished_at=FINISHED + timedelta(minutes=i)))
+    listed = await repo.list_for_monitor(MONITOR_ID, limit=None)
+    assert len(listed) == 5
+
+
+async def test_list_filters_by_since_and_until_window(repo: CheckResultRepository) -> None:
+    # finished_at at +0, +1, +2, +3, +4 minutes from FINISHED.
+    for i in range(5):
+        await repo.add(sample_result(finished_at=FINISHED + timedelta(minutes=i)))
+
+    # Inclusive both ends: [+1min, +3min] keeps the +1/+2/+3 results, newest-first.
+    windowed = await repo.list_for_monitor(
+        MONITOR_ID,
+        since=FINISHED + timedelta(minutes=1),
+        until=FINISHED + timedelta(minutes=3),
+    )
+    assert [r.finished_at for r in windowed] == [
+        FINISHED + timedelta(minutes=3),
+        FINISHED + timedelta(minutes=2),
+        FINISHED + timedelta(minutes=1),
+    ]
+
+
+async def test_since_and_until_compose_with_limit(repo: CheckResultRepository) -> None:
+    for i in range(5):
+        await repo.add(sample_result(finished_at=FINISHED + timedelta(minutes=i)))
+
+    windowed = await repo.list_for_monitor(
+        MONITOR_ID, since=FINISHED + timedelta(minutes=1), limit=2
+    )
+    # since=+1min keeps +1..+4 (4 rows); newest-first bounded to 2 → +4, +3.
+    assert [r.finished_at for r in windowed] == [
+        FINISHED + timedelta(minutes=4),
+        FINISHED + timedelta(minutes=3),
+    ]

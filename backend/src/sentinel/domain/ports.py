@@ -32,12 +32,19 @@ class MonitorRepository(Protocol):
 
 class CheckResultRepository(Protocol):
     """Persistence boundary for `CheckResult`s. `list_for_monitor` returns a
-    monitor's checks newest-first (S7 extends it with from/to windows)."""
+    monitor's checks newest-first, optionally bounded to a `[since, until]`
+    window on `finished_at` (both inclusive, both optional) and capped by `limit`
+    (`None` = no cap, used to scan a full stats window)."""
 
     async def add(self, result: CheckResult) -> CheckResult: ...
 
     async def list_for_monitor(
-        self, monitor_id: UUID, *, limit: int = 100
+        self,
+        monitor_id: UUID,
+        *,
+        since: datetime | None = None,
+        until: datetime | None = None,
+        limit: int | None = 100,
     ) -> list[CheckResult]: ...
 
 

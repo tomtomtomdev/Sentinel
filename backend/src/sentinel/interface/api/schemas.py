@@ -13,6 +13,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field
 
+from sentinel.application.stats_service import MonitorSummary, StatsView
 from sentinel.domain.entities import (
     DEFAULT_INTERVAL_SECONDS,
     DEFAULT_REFRESH_BEFORE_EXPIRY_SECONDS,
@@ -42,6 +43,7 @@ from sentinel.domain.value_objects import (
     Injection,
     InjectionTarget,
     MonitorDraft,
+    MonitorStatus,
     OAuthConfig,
     ProbeRequest,
     TokenExtractor,
@@ -144,8 +146,33 @@ class MonitorUpdate(BaseModel):
         return replace(existing, **changes)
 
 
+class MonitorSummaryDTO(BaseModel):
+    """The 24h dashboard rollup attached to each monitor under `?include=summary`
+    (SPEC §3.5): current status + uptime, p95 latency, and last-check time.
+    `checks == 0` marks "no data yet" so the UI can distinguish it from 0% uptime."""
+
+    status: MonitorStatus
+    since: datetime | None
+    last_check_at: datetime | None
+    uptime_pct: float
+    latency_p95_ms: int | None
+    checks: int
+
+    @classmethod
+    def from_summary(cls, summary: MonitorSummary) -> MonitorSummaryDTO:
+        return cls(
+            status=summary.status,
+            since=summary.since,
+            last_check_at=summary.last_check_at,
+            uptime_pct=summary.uptime_pct,
+            latency_p95_ms=summary.latency_p95_ms,
+            checks=summary.checks,
+        )
+
+
 class MonitorResponse(BaseModel):
-    """Full monitor with secret header values redacted (SPEC §5)."""
+    """Full monitor with secret header values redacted (SPEC §5). `summary` is
+    populated only for the list view's `?include=summary` and is `None` otherwise."""
 
     id: UUID
     name: str
@@ -167,9 +194,12 @@ class MonitorResponse(BaseModel):
     tags: list[str]
     created_at: datetime | None
     updated_at: datetime | None
+    summary: MonitorSummaryDTO | None = None
 
     @classmethod
-    def from_entity(cls, monitor: Monitor) -> MonitorResponse:
+    def from_entity(
+        cls, monitor: Monitor, summary: MonitorSummaryDTO | None = None
+    ) -> MonitorResponse:
         return cls(
             id=monitor.id,
             name=monitor.name,
@@ -193,6 +223,7 @@ class MonitorResponse(BaseModel):
             tags=list(monitor.tags),
             created_at=monitor.created_at,
             updated_at=monitor.updated_at,
+            summary=summary,
         )
 
 
@@ -287,6 +318,46 @@ class CheckResultResponse(BaseModel):
                 AssertionResultDTO(type=a.type, passed=a.passed, detail=a.detail, skipped=a.skipped)
                 for a in result.assertion_results
             ],
+        )
+
+
+class LatencyPercentilesDTO(BaseModel):
+    """Nearest-rank latency percentiles over the window (SPEC §5). Each is `None`
+    when no timed result fell in the window (all transport failures / no data)."""
+
+    p50: int | None
+    p95: int | None
+    p99: int | None
+
+
+class StatsResponse(BaseModel):
+    """Uptime/latency over a window joined with live status/since (SPEC §3.5, §5).
+    Short windows are computed from raw `CheckResult`s here; S7a serves the long
+    windows from hourly rollups."""
+
+    window: str
+    checks: int
+    failures: int
+    uptime_pct: float
+    latency_ms: LatencyPercentilesDTO
+    status: MonitorStatus
+    since: datetime | None
+
+    @classmethod
+    def from_view(cls, view: StatsView) -> StatsResponse:
+        stats = view.stats
+        return cls(
+            window=stats.window,
+            checks=stats.checks,
+            failures=stats.failures,
+            uptime_pct=stats.uptime_pct,
+            latency_ms=LatencyPercentilesDTO(
+                p50=stats.latency_p50_ms,
+                p95=stats.latency_p95_ms,
+                p99=stats.latency_p99_ms,
+            ),
+            status=view.status,
+            since=view.since,
         )
 
 
