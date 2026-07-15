@@ -171,6 +171,46 @@ class CheckCompleted:
 Event = CheckCompleted | StateTransition
 
 
+# --- Alerting (SPEC §3.7) ---------------------------------------------------
+
+
+class NotifyKind(StrEnum):
+    """What a `should_notify` decision calls for (SPEC §3.7). `transition` is a
+    normal per-flip alert; `flapping` is the single summary emitted when a monitor
+    crosses the flap threshold; `suppressed` means no alert (already flapping, or
+    inside the re-notify cooldown)."""
+
+    TRANSITION = "transition"
+    FLAPPING = "flapping"
+    SUPPRESSED = "suppressed"
+
+
+@dataclass(frozen=True)
+class AlertPolicy:
+    """Tunables for the pure notify decision (SPEC §3.7). `flap_threshold`
+    transitions within `flap_window_seconds` trip a single "flapping" summary and
+    suppress further per-transition alerts until the monitor stabilizes; a
+    `flap_threshold < 2` disables flap damping (a flip needs at least two
+    transitions to flap). `renotify_after_seconds` (0 = off, the default) rate-limits
+    a repeat alert for the same status."""
+
+    flap_threshold: int = 5
+    flap_window_seconds: int = 600
+    renotify_after_seconds: int = 0
+
+
+@dataclass(frozen=True)
+class NotifyDecision:
+    """The outcome of `should_notify` (SPEC §3.7). `notify` is the go/no-go; `kind`
+    says which message to send (`transition` vs a `flapping` summary) or why it was
+    withheld; `reason` is a human-readable note for logs/audit. `notify` is `True`
+    exactly when `kind` is not `suppressed`."""
+
+    notify: bool
+    kind: NotifyKind
+    reason: str
+
+
 @dataclass(frozen=True)
 class Stats:
     """Computed uptime/latency over a window (SPEC §3.5, §5). `status`/`since` are

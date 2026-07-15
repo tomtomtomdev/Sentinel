@@ -20,123 +20,77 @@
 
 ## Current state
 
-- **Phase:** **S8 complete — SSE live events.** `GET /api/v1/events` is now a
-  `text/event-stream` `StreamingResponse` that streams two event types to connected
-  dashboards (SPEC §3.6): `check_completed` after **every** recorded `CheckResult`
-  and `status_changed` on a **confirmed** state transition. New `EventBus` port
-  (`publish(event)` + `subscribe()` async ctx-mgr yielding an `AsyncIterator[Event]`)
-  with an in-process adapter (`infrastructure/events.py` — per-subscriber bounded
-  `asyncio.Queue`, **drop-oldest** back-pressure, `publish` never blocks/raises) and a
-  `FakeEventBus` (records `.published` + fans out). Two event VOs: a new
-  `CheckCompleted` (a narrow, **secret-free** summary — monitor_id/at/success/
-  status_code/latency_ms/error, smaller than `CheckResult`) and the existing
-  `StateTransition` reused verbatim as `status_changed`; the SSE frame's name + JSON
-  shape (SPEC §5) live in `interface/api/events.py` (`to_sse_frame`). **This is where
-  the `StateTransition` from `advance_state` is finally consumed:** `CheckService.
-  _advance_state` now returns it and `_publish_events` emits `check_completed` always
-  and `status_changed` when non-None. `events` is a **third optional** `CheckService`
-  dep (mirrors `states`/`rollups`) so the manual path + every call site stay green.
-  The bus is **process-local**, wired into the **API** root only (`get_event_bus`, an
-  `@lru_cache` singleton shared by the check pipeline and `/events`); the **scheduler
-  worker is deliberately not wired** — an in-process bus can't reach API SSE clients,
-  so cross-process delivery needs a Redis-backed adapter behind the same port (parked).
-  No migration, no new config, no new deps. S9 turns the same transition into an alert.
-- **Prior phase:** **S7a complete — rollups & long-window stats.** Hourly `CheckRollup`s
-  now back the 7d/30d stat windows so a long query never scans raw rows (SPEC §6,
-  PLAN D7). Two new pure functions in `domain/logic/rollups.py`: `hour_bucket(at)`
-  (UTC hour truncation) and `fold_results_into_rollup(existing | None, results) ->
-  CheckRollup`, which **recomputes** one hour bucket's aggregate from its raw
-  `CheckResult`s (checks/failures + nearest-rank p50/p95/p99 + `latency_sum_ms`) —
-  recompute-not-increment makes it **idempotent** (re-folding never double-counts)
-  and per-bucket-exact vs `compute_stats`; plus `aggregate_rollups(rollups, window)
-  -> Stats` (exact summed checks/failures/uptime; **check-weighted** percentiles
-  across the per-bucket sketches — approximate across heterogeneous buckets, the
-  accepted rollup trade-off). The nearest-rank helper + `uptime_pct` were promoted
-  to public in `domain/logic/stats.py` so raw and rollup paths can't drift. New
-  `CheckRollup` entity (SPEC §4), `CheckRollupRepository` port (`get`/`save`
-  upsert by composite `(monitor_id, bucket_start)`/`list_for_window`), in-memory
-  fake + `SqlCheckRollupRepository` (`check_rollups` table, composite PK, migration
-  `c9d2e5f80a14`; `updated_at` stamped via `Clock`, no secrets → no `SecretBox`).
-  `CheckService` gained a **second optional dep** `rollups` (mirrors `states`):
-  after recording a result it recomputes that result's hour bucket from raw and
-  upserts the rollup — on every path incl. transport failures. `StatsService.stats`
-  now branches: **24h from raw** `compute_stats`, **7d/30d from** `aggregate_rollups`
-  over `list_for_window`. Wired into `deps.py` (both `get_stats_service` +
-  `get_check_service`) and the worker `build_runner`. Rollup retention (13mo,
-  separate from raw pruning) lands with **S10**. The `StateTransition` from
-  `advance_state` still stays **unconsumed** until S8 (event) / S9 (alert).
-- **Earlier phase:** **S7.3 complete — S7 (State, stats & history) is DONE.** The three
-  §3.5 read endpoints ship, all through a new `StatsService`
-  (`application/stats_service.py`) that orchestrates existing ports (no rules):
-  `GET /monitors/{id}/results?from&to&limit` (windowed, newest-first history, 404
-  on unknown monitor), `GET /monitors/{id}/stats?window=24h|7d|30d` (pure
-  `compute_stats` joined with `status`/`since` from `MonitorStateRepository` into a
-  `StatsView` → §5 shape `{window,checks,failures,uptime_pct,latency_ms:{p50,p95,
-  p99},status,since}`; unknown `window` → 422, unknown monitor → 404), and
-  `GET /monitors?include=summary` (a `MonitorSummary` per monitor —
-  status/since/last_check_at + 24h uptime_pct/latency_p95_ms/checks; **N+1** by
-  design, acceptable at v1). `CheckResultRepository.list_for_monitor` gained
-  optional `since`/`until` (inclusive `finished_at` bounds) + `limit: int | None`
-  (`None` = no cap); the stats path fetches the whole window unbounded and
-  `compute_stats` re-filters (long-window rollups are **S7a**). New public
-  `window_start(window, now)` helper in `domain/logic/stats.py`. Wired
-  `get_stats_service` in `deps.py`. The `StateTransition` from `advance_state`
-  remains **unconsumed** until S8 (event) / S9 (alert).
-- **Older phase:** **S7.2 complete** — `MonitorState` persistence + the check pipeline
-  now advances it. New `MonitorStateRepository` port (`get(monitor_id) ->
-  MonitorState | None`, `save(state)` upsert — one row per monitor) with an
-  in-memory fake + `SqlMonitorStateRepository` (`monitor_states` table, migration
-  `e11783af3b0a`; `MonitorStatus` stored as text, no secrets so no `SecretBox`).
-  `CheckService.run_check` gained an **optional** `states` dep: after recording the
-  `CheckResult` it loads the state (or `initial_state(monitor_id,
-  result.finished_at)`), folds via `advance_state(...)` with the monitor's
-  thresholds, and `save`s — on **every** path incl. transport-failure results (a
-  `ProbeError` result advances the counters as a failure).
-- **Oldest phase:** **S7.1 complete** — pure state + stats logic (S7 split into
-  S7.1/S7.2/S7.3). `domain/logic/state.py` — `initial_state`, `advance_state`
-  (folds a `CheckResult`: counters + `last_check_at` bump every check,
-  `status`/`since` flip only on a threshold crossing), `transition_between`;
-  `domain/logic/stats.py` — `compute_stats` (window-filtered uptime %, nearest-rank
-  p50/p95/p99). Value objects `MonitorStatus`/`StatsWindow`/`StateTransition`/
-  `Stats` + the `MonitorState` entity (SPEC §4).
-- **Last green commit:** S7a (`feat(stats): hourly rollups + long-window stats from
-  rollups (S7a)`); S8 staged.
-- **Test suite:** `just test` (no DB) → **341 passed, 35 skipped** (+15 from S8).
-  With `TEST_DATABASE_URL=…/sentinel_test` → **376 passed** (no skips). New: `tests/
-  unit/interface/test_sse_serialization.py` (3 — `to_sse_frame` renders the SPEC §5
-  `status_changed` shape + a secret-free `check_completed`, incl. transport-failure
-  nulls), `tests/unit/infrastructure/test_event_bus.py` (5 — deliver to a subscriber,
-  fan-out to many, deregister on context exit, no-subscriber no-op, full-queue
-  drop-oldest never blocks), `tests/integration/test_events_api.py` (7 —
-  `check_completed` on every check, `status_changed` only on a confirmed transition
-  (unknown→down→up) with fields, publish without a state repo, `run_check` with no
-  bus, route registered, and a connected client observes both events by draining the
-  endpoint's `StreamingResponse.body_iterator`). Real-wire SSE framing smoke-tested
-  against a live uvicorn (health 200; `content-type: text/event-stream`; both frames
-  correct).
+- **Phase:** **S9.1 complete — pure `should_notify` (flap damping + cooldown).** The
+  I/O-free heart of alerting (SPEC §3.7) is in place ahead of any channels/adapters.
+  New `domain/logic/notify.py`: `should_notify(transition, recent_transitions, policy,
+  now) -> NotifyDecision`, a pure function over a confirmed `StateTransition` and the
+  monitor's **prior** transitions. **Flap damping** wins over cooldown — counting the
+  current flip plus the prior transitions still inside `flap_window_seconds`, the flip
+  that first reaches `flap_threshold` returns one `flapping` summary (`notify=True`),
+  any further flip while the count stays above the threshold is `suppressed`
+  (`notify=False`), and once old flips age out of the window normal `transition` alerts
+  resume; `flap_threshold < 2` disables damping and the window boundary is exclusive
+  (`t.at > now - window`). **Re-notify cooldown** (when `renotify_after_seconds > 0`)
+  then suppresses a repeat alert for the *same* `to_status` within the cooldown; the
+  default (0) = one alert per confirmed transition. Three new value objects —
+  `AlertPolicy` (flap_threshold=5 / flap_window_seconds=600 / renotify_after_seconds=0
+  defaults), `NotifyDecision` (notify/kind/reason), `NotifyKind`
+  (transition|flapping|suppressed; `notify` is `True` iff kind != suppressed). No
+  persistence, adapters, or wiring yet (S9.2/S9.3). The `StateTransition` from
+  `advance_state` is still consumed only by S8's event bus; S9.3 feeds it to this
+  decision + the notifier (read **directly**, not via the `EventBus`).
+- **Prior phase:** **S8 complete — SSE live events.** `GET /api/v1/events` streams
+  `check_completed` (every recorded check) + `status_changed` (confirmed transition) to
+  connected dashboards via an in-process `EventBus` port (per-subscriber bounded queue,
+  **drop-oldest** back-pressure, `publish` never blocks/raises) wired into the **API**
+  root only (scheduler worker deliberately unwired — cross-process delivery is a parked
+  Redis drop-in). `CheckService._advance_state` returns the `StateTransition`;
+  `_publish_events` emits both. `CheckCompleted` VO is a narrow secret-free summary;
+  the SSE frame shape lives in `interface/api/events.py`.
+- **Earlier phase:** **S7/S7a complete — state, stats, history, rollups.** `MonitorState`
+  persists + advances via `advance_state`; the three §3.5 read endpoints ship through
+  `StatsService`; hourly `CheckRollup`s back 7d/30d (`fold_results_into_rollup`
+  idempotent-per-bucket + `aggregate_rollups`, 24h-raw / 7d-30d-rollup split). S5b (auth
+  source) + S6 (scheduler + heartbeat) complete beneath.
+- **Last green commit:** S8 (`feat(events): SSE live events — EventBus port + /events
+  stream (S8)`); S9.1 staged.
+- **Test suite:** `just test` (no DB) → **354 passed, 35 skipped** (+13 from S9.1). With
+  `TEST_DATABASE_URL=…/sentinel_test` → **389 passed** (no skips). New:
+  `tests/unit/domain/test_notify.py` (13 — transition + recovery notify; flap
+  below/crossing/above threshold; resume-after-window-clears; window boundary exclusive;
+  damping disabled `<2`; flap-beats-cooldown; cooldown off-by-default/suppress/elapsed/
+  per-status). ruff + mypy strict clean. App imports/boots (in-suite API tests +
+  explicit import smoke).
 - **Schema/migrations:** head **`c9d2e5f80a14`** (`check_rollups`, composite PK
-  `(monitor_id, bucket_start)`).
+  `(monitor_id, bucket_start)`). No new migration in S9.1.
 - **Deps:** unchanged.
-- **Config:** **+`heartbeat_url`, `scheduler_poll_seconds`,
-  `scheduler_max_concurrency`** (see `.env.example` candidates).
+- **Config:** unchanged in S9.1 — `AlertPolicy` is a pure policy VO; S9.3 wires its
+  values from config. (`heartbeat_url`, `scheduler_poll_seconds`,
+  `scheduler_max_concurrency` from S6 remain.)
 - **Deployed:** no.
 
 ## Next action
 
-➡️ **Begin S9 — Alert channels + notify (SPEC §3.7).** On a confirmed transition (the
-`StateTransition` S8 already surfaces from `advance_state`), notify all enabled channels
-**exactly once, idempotently**, with re-notify cooldown + flap damping. Add the
-`AlertChannel` entity + CRUD (`webhook` / `telegram` / `email`; **channel secrets are
-write-only** over the API and encrypted at rest via `SecretBox` — see
-**sentinel-security**), a `Notifier` port + adapters, and a `NotificationLog` for
-idempotency. Keep the notify **decision pure**: `should_notify(...)` in `domain/logic/`
-— flap damping (≥`flap_threshold` transitions within `flap_window_seconds` → one
-"flapping" summary, resume when stable) and cooldown (`renotify_after_seconds`) are
-pure functions over recent transition history + `now`. Write the failing `should_notify`
-unit tests first (SPEC §7 "Transition/alert" + "Flap damping"), then the channel
-entity/repo/migration, the `Notifier` adapters, and the application wiring that consumes
-the transition. Alerting reads the transition **directly** (not via the S8 `EventBus`);
-the two are orthogonal. See **sentinel-architecture** (add-a-capability recipe).
+➡️ **Begin S9.2 — `AlertChannel`/`NotificationLog` persistence + channel CRUD API.**
+Add the `AlertChannel` entity (`type`: webhook|telegram|email, `name`, `config`,
+`enabled`) and `NotificationLog` entity (idempotency/audit — id/channel_id/monitor_id/
+transition_to/fired_at/ok/detail), their `AlertChannelRepository` +
+`NotificationLogRepository` ports + in-memory fakes + SQL repos + models + one Alembic
+migration, then the channel CRUD routes/DTOs. **Channel `config` secrets are write-only
+over the API and encrypted at rest via `SecretBox`** — redact/drop them in responses
+(see **sentinel-security** §1/§2; reuse the shared `infrastructure/db/secret_mapping.py`
+crypto from the auth-source repos). Write the failing repo-contract + API tests first
+(create stores encrypted config but redacts on read; list/get/patch/delete; secret never
+returned). The `Notifier` port + webhook/telegram adapters + the `AlertService` that
+loads recent transitions, runs `should_notify`, fires enabled channels **exactly once**
+(idempotent via `NotificationLog`), and logs the outcome are **S9.3** — it consumes the
+`StateTransition` **directly**, not via the S8 `EventBus`. See **sentinel-architecture**
+(add-a-capability recipe) and **sentinel-security**.
+
+**S9.3 open question:** provenance of `recent_transitions` for flap detection — a
+`NotificationLog` only records *fired* notifications, so flap history (which needs every
+transition incl. suppressed ones) needs either a dedicated store or reconstruction.
+Decide in S9.3.
 
 ---
 
@@ -161,7 +115,10 @@ the two are orthogonal. See **sentinel-architecture** (add-a-capability recipe).
   - [x] **S7.3** `GET /results`, `GET /stats`, `?include=summary` endpoints
 - [x] **S7a** Rollups & long-window stats
 - [x] **S8** SSE live events
-- [ ] **S9** Alert channels + notify (cooldown + flap damping)
+- [ ] **S9** Alert channels + notify (cooldown + flap damping) _(split — see log)_
+  - [x] **S9.1** Pure `should_notify` (flap damping + cooldown) + alert value objects
+  - [ ] **S9.2** `AlertChannel`/`NotificationLog` persistence + channel CRUD API
+  - [ ] **S9.3** `Notifier` adapters + `AlertService` wiring (idempotent via `NotificationLog`)
 - [ ] **S9a** Minimal API auth gate
 - [ ] **S10** SSRF guard + retention
 - [ ] **S11** Frontend scaffold
@@ -185,6 +142,55 @@ the two are orthogonal. See **sentinel-architecture** (add-a-capability recipe).
 > Commit(s): <conventional commit subject lines>
 > Resume hint: <the very next concrete step>
 > ```
+
+### S9.1 — Pure `should_notify` (flap damping + cooldown) + alert value objects  · 2026-07-15
+Done: The I/O-free notify decision (SPEC §3.7) ships ahead of any channels/adapters.
+`domain/logic/notify.py::should_notify(transition, recent_transitions, policy, now) ->
+NotifyDecision` is a pure function over a confirmed `StateTransition` and the monitor's
+**prior** transitions. **Flap damping** (SPEC §7): counting the current flip plus the
+prior transitions still inside `flap_window_seconds`, the flip that first reaches
+`flap_threshold` returns one `flapping` summary (`notify=True`), any further flip while
+the count stays above the threshold is `suppressed` (`notify=False`), and once old flips
+age out of the window normal `transition` alerts resume — a single summary, not a storm.
+`flap_threshold < 2` disables damping (a flip needs ≥2 transitions to flap); the flap
+window boundary is exclusive (`t.at > now - window`). **Cooldown** (SPEC §3.7): when
+`renotify_after_seconds > 0`, a repeat alert for the *same* `to_status` within the
+cooldown is suppressed; the default (0) = one alert per confirmed transition. Flap
+damping is evaluated first and wins over cooldown. Three new value objects in
+`domain/value_objects.py`: `AlertPolicy` (defaults flap_threshold=5 /
+flap_window_seconds=600 / renotify_after_seconds=0), `NotifyDecision` (notify/kind/
+reason), `NotifyKind` (transition|flapping|suppressed; `notify` is `True` iff kind !=
+suppressed). No persistence, adapters, or wiring (S9.2/S9.3).
+Tests: `tests/unit/domain/test_notify.py` (13 — transition + recovery notify; flap
+below/crossing/above threshold; resume-after-window-clears; window boundary exclusive;
+damping disabled `<2`; flap-beats-cooldown; cooldown off-by-default/suppress/elapsed/
+per-status). Suite: **354 passed / 35 skipped** (no DB), +13; **389 with PG**
+(`sentinel_test`). ruff + mypy strict clean. App imports/boots (in-suite API tests +
+explicit import smoke).
+Decisions: **D26** (S9 split S9.1/S9.2/S9.3; pure `should_notify` with flap-beats-
+cooldown precedence, exclusive window boundary, `flap_threshold < 2` disables; cooldown
+is per-`to_status` repeat suppression, default off = one-alert-per-transition;
+`AlertPolicy` is a global-config policy VO, not a per-monitor field — the Monitor §4
+carries no flap/renotify fields; periodic while-down *reminders* parked) added to
+PLAN §7.
+Files: `src/sentinel/domain/value_objects.py` (+`NotifyKind`/`AlertPolicy`/
+`NotifyDecision`), `src/sentinel/domain/logic/notify.py` (new),
+`tests/unit/domain/test_notify.py` (new).
+Follow-ups / parked: `AlertChannel`/`NotificationLog` entities + repos + migration +
+channel CRUD (secrets write-only via `SecretBox`) are **S9.2**; the `Notifier` port +
+webhook/telegram adapters + the `AlertService` that loads recent transitions, runs
+`should_notify`, fires enabled channels once (idempotent via `NotificationLog`), and
+logs are **S9.3** (consumes the transition **directly**, not via the S8 `EventBus`).
+**Open for S9.3:** provenance of `recent_transitions` — a `NotificationLog` records only
+*fired* notifications, so flap history needs all transitions incl. suppressed ones
+(dedicated store vs reconstruct). Periodic "still down" reminder emitter (scheduler-
+driven re-alert gated by the cooldown) is parked — cooldown defaults off and §7 has no
+reminder acceptance test.
+Commit(s): `feat(alerts): pure should_notify — flap damping + re-notify cooldown (S9.1)`.
+Resume hint: start S9.2 — write the failing `AlertChannelRepository` contract test
+(create stores encrypted config + redacts on read) and channel-CRUD API test (secret
+never returned) before the entities, ports, fakes, SQL repos/models, migration, and
+routes/DTOs.
 
 ### S8 — SSE live events  · 2026-07-15
 Done: `GET /api/v1/events` streams Server-Sent Events to connected dashboards

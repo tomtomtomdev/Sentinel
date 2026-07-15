@@ -640,6 +640,39 @@ stable (after S7), against a mock server if needed.
   which buffers a response to completion and so hangs on an infinite SSE stream;
   real-wire framing was smoke-tested against a live uvicorn.
 
+- **D26 — S9 splits into S9.1/S9.2/S9.3; the notify decision is one pure function
+  where flap damping beats cooldown; `AlertPolicy` is a global-config policy VO, not
+  a per-monitor field.** S9 (channel CRUD + notifier + wiring + the pure decision) is
+  too big for one slice, so it's sequenced: **S9.1** the pure, I/O-free
+  `should_notify` + alert value objects (done); **S9.2** `AlertChannel`/
+  `NotificationLog` persistence (entities, ports, fakes, rows, migration, SQL repos —
+  channel `config` secrets encrypted via `SecretBox`) + channel CRUD API (secrets
+  write-only/redacted); **S9.3** the `Notifier` port + webhook/telegram adapters + the
+  `AlertService` that consumes the confirmed `StateTransition` **directly** (not via
+  the S8 `EventBus`), runs `should_notify`, fires enabled channels exactly once
+  (idempotent via `NotificationLog`), and logs. `should_notify(transition,
+  recent_transitions, policy, now) -> NotifyDecision` is a single pure function (PLAN
+  §1) over the current flip plus the monitor's prior transitions, `now` injected (D4).
+  **Flap damping is evaluated first and wins over cooldown:** counting the current flip
+  plus prior transitions still inside `flap_window_seconds`, the flip that first
+  reaches `flap_threshold` emits one `flapping` summary and further flips above the
+  threshold are `suppressed`, then normal `transition` alerts resume once old flips age
+  out — one summary, not a storm (SPEC §7). `flap_threshold < 2` disables damping (a
+  flip needs ≥2 transitions to flap) and the window boundary is **exclusive**
+  (`t.at > now - window`). **Cooldown** (`renotify_after_seconds > 0`) suppresses a
+  repeat alert for the *same* `to_status` within the window; the default (0) is
+  "one alert per confirmed transition" (SPEC §3.7). `NotifyDecision.notify` is `True`
+  iff `kind != suppressed`. **`AlertPolicy` lives in global config, not on the
+  Monitor** — SPEC §4's Monitor carries `failure_threshold`/`recovery_threshold` but
+  **no** flap/renotify fields, so the flap/cooldown tunables are system-wide for v1
+  (S9.3 builds the policy from config); per-monitor overrides are parked. The genuine
+  periodic **"still down" reminder** emitter (a scheduler-driven re-alert gated by the
+  cooldown) is also parked: cooldown defaults off and §7 has no reminder acceptance
+  test, so v1 cooldown is the transition-time repeat-suppression above. **Open for
+  S9.3:** where `recent_transitions` come from — a `NotificationLog` records only
+  *fired* notifications, so flap history (needs suppressed transitions too) requires a
+  dedicated store or reconstruction; decided in S9.3.
+
 _Append new decisions here as `Dn — <decision>: <why>` when slices force a choice._
 
 ---
