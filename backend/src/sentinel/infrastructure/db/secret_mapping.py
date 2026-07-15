@@ -6,7 +6,9 @@ encryption and redaction can never drift (PLAN D18)."""
 
 from __future__ import annotations
 
-from sentinel.domain.logic.redaction import is_secret_header
+from typing import Any
+
+from sentinel.domain.logic.redaction import is_secret_config_key, is_secret_header
 from sentinel.domain.ports import SecretBox
 
 
@@ -33,4 +35,30 @@ def decrypt_secret_headers(headers: dict[str, str], secret_box: SecretBox) -> di
     return {
         name: (decrypt_value(value, secret_box) if is_secret_header(name) else value)
         for name, value in headers.items()
+    }
+
+
+def encrypt_secret_config(config: dict[str, Any], secret_box: SecretBox) -> dict[str, Any]:
+    """Encrypt an alert channel's secret (string) config values for storage; pass
+    every other value through. Which keys are secret is the shared
+    `is_secret_config_key` classifier, so encryption and API redaction never drift."""
+    return {
+        key: (
+            encrypt_value(value, secret_box)
+            if is_secret_config_key(key) and isinstance(value, str)
+            else value
+        )
+        for key, value in config.items()
+    }
+
+
+def decrypt_secret_config(config: dict[str, Any], secret_box: SecretBox) -> dict[str, Any]:
+    """Inverse of `encrypt_secret_config` — decrypt secret values on read."""
+    return {
+        key: (
+            decrypt_value(value, secret_box)
+            if is_secret_config_key(key) and isinstance(value, str)
+            else value
+        )
+        for key, value in config.items()
     }

@@ -20,26 +20,35 @@
 
 ## Current state
 
-- **Phase:** **S9.1 complete — pure `should_notify` (flap damping + cooldown).** The
-  I/O-free heart of alerting (SPEC §3.7) is in place ahead of any channels/adapters.
-  New `domain/logic/notify.py`: `should_notify(transition, recent_transitions, policy,
-  now) -> NotifyDecision`, a pure function over a confirmed `StateTransition` and the
-  monitor's **prior** transitions. **Flap damping** wins over cooldown — counting the
-  current flip plus the prior transitions still inside `flap_window_seconds`, the flip
-  that first reaches `flap_threshold` returns one `flapping` summary (`notify=True`),
-  any further flip while the count stays above the threshold is `suppressed`
-  (`notify=False`), and once old flips age out of the window normal `transition` alerts
-  resume; `flap_threshold < 2` disables damping and the window boundary is exclusive
-  (`t.at > now - window`). **Re-notify cooldown** (when `renotify_after_seconds > 0`)
-  then suppresses a repeat alert for the *same* `to_status` within the cooldown; the
-  default (0) = one alert per confirmed transition. Three new value objects —
-  `AlertPolicy` (flap_threshold=5 / flap_window_seconds=600 / renotify_after_seconds=0
-  defaults), `NotifyDecision` (notify/kind/reason), `NotifyKind`
-  (transition|flapping|suppressed; `notify` is `True` iff kind != suppressed). No
-  persistence, adapters, or wiring yet (S9.2/S9.3). The `StateTransition` from
-  `advance_state` is still consumed only by S8's event bus; S9.3 feeds it to this
-  decision + the notifier (read **directly**, not via the `EventBus`).
-- **Prior phase:** **S8 complete — SSE live events.** `GET /api/v1/events` streams
+- **Phase:** **S9.2 complete — alert-channel/notification-log persistence + channel
+  CRUD API.** Two new entities (SPEC §4): `AlertChannel` (`type`
+  webhook|telegram|email, `name`, `config`, `enabled`; no audit timestamps per §4) and
+  `NotificationLog` (id/channel_id/monitor_id/transition_to/**transition_at**/fired_at/
+  ok/detail — the audit + idempotency ledger). New `AlertChannelRepository`
+  (add/get/list/update/delete) and `NotificationLogRepository` (add/`exists`/
+  list_for_monitor) ports + in-memory fakes + SQL adapters
+  (`infrastructure/db/alert_channel_repository.py`) + rows + migration
+  `d4a1b2c3e5f6` (`alert_channels`, `notification_logs` with a **unique
+  `(channel_id, monitor_id, transition_at)`** so a transition fires once per channel).
+  **Channel `config` secrets are write-only:** encrypted at rest via `SecretBox`
+  (`encrypt_secret_config`/`decrypt_secret_config` in `secret_mapping.py`) and masked
+  in responses (`redact_config`), both driven by the **same** new
+  `is_secret_config_key` heuristic (`*token*/*secret*/*key*/*password*`) so encryption
+  and redaction can't drift (mirrors D18). `AlertChannelService` (CRUD, `NotFoundError`
+  → 404) + `POST/GET/GET{id}/PATCH/DELETE /api/v1/channels` routes (secret never
+  returned). Also fixed a **SPEC §4 gap**: `NotificationLog` had no field to identify
+  *which* transition a row belongs to — added `transition_at` (the flip time) so
+  exactly-once idempotency has a stable key. Notification-log repo is not yet wired
+  into a composition root (S9.3 consumes it); channel repo/service wired into `deps.py`.
+- **Prior phase:** **S9.1 complete — pure `should_notify` (flap damping + cooldown).**
+  `domain/logic/notify.py::should_notify(transition, recent_transitions, policy, now)
+  -> NotifyDecision`. Flap damping (one `flapping` summary at the threshold crossing,
+  suppress above it, resume when flips age out; `< 2` disables; exclusive window) wins
+  over re-notify cooldown (same-`to_status` repeat within `renotify_after_seconds`;
+  default 0 = one alert per transition). VOs: `AlertPolicy`, `NotifyDecision`,
+  `NotifyKind`. Consumed by S9.3's `AlertService` (reads the transition **directly**,
+  not via the S8 `EventBus`).
+- **Earlier phase:** **S8 complete — SSE live events.** `GET /api/v1/events` streams
   `check_completed` (every recorded check) + `status_changed` (confirmed transition) to
   connected dashboards via an in-process `EventBus` port (per-subscriber bounded queue,
   **drop-oldest** back-pressure, `publish` never blocks/raises) wired into the **API**
@@ -47,50 +56,63 @@
   Redis drop-in). `CheckService._advance_state` returns the `StateTransition`;
   `_publish_events` emits both. `CheckCompleted` VO is a narrow secret-free summary;
   the SSE frame shape lives in `interface/api/events.py`.
-- **Earlier phase:** **S7/S7a complete — state, stats, history, rollups.** `MonitorState`
-  persists + advances via `advance_state`; the three §3.5 read endpoints ship through
-  `StatsService`; hourly `CheckRollup`s back 7d/30d (`fold_results_into_rollup`
-  idempotent-per-bucket + `aggregate_rollups`, 24h-raw / 7d-30d-rollup split). S5b (auth
-  source) + S6 (scheduler + heartbeat) complete beneath.
-- **Last green commit:** S8 (`feat(events): SSE live events — EventBus port + /events
-  stream (S8)`); S9.1 staged.
-- **Test suite:** `just test` (no DB) → **354 passed, 35 skipped** (+13 from S9.1). With
-  `TEST_DATABASE_URL=…/sentinel_test` → **389 passed** (no skips). New:
-  `tests/unit/domain/test_notify.py` (13 — transition + recovery notify; flap
-  below/crossing/above threshold; resume-after-window-clears; window boundary exclusive;
-  damping disabled `<2`; flap-beats-cooldown; cooldown off-by-default/suppress/elapsed/
-  per-status). ruff + mypy strict clean. App imports/boots (in-suite API tests +
-  explicit import smoke).
-- **Schema/migrations:** head **`c9d2e5f80a14`** (`check_rollups`, composite PK
-  `(monitor_id, bucket_start)`). No new migration in S9.1.
+- **Older phase:** **S7/S7a + S8 complete — state, stats, history, rollups, SSE.**
+  `MonitorState` advances via `advance_state`; §3.5 read endpoints via `StatsService`;
+  hourly `CheckRollup`s back 7d/30d; `GET /events` streams `check_completed`/
+  `status_changed`. S5b (auth source) + S6 (scheduler + heartbeat) complete beneath.
+- **Last green commit:** S9.1 (`feat(alerts): pure should_notify — flap damping +
+  re-notify cooldown (S9.1)`); S9.2 staged.
+- **Test suite:** `just test` (no DB) → **391 passed, 44 skipped** (+37 from S9.2). With
+  `TEST_DATABASE_URL=…/sentinel_test` → **435 passed** (no skips). New:
+  `tests/unit/domain/test_alert_channel.py` (21 collected — `is_secret_config_key`
+  secret/non-secret keys [parametrized], `redact_config` mask/passthrough/no-mutate/
+  empty, `AlertChannel` name-blank invariant, `NotificationLog` construction),
+  `tests/integration/test_alert_channel_repository.py` (17 with PG = channel round-trip/
+  list/update/delete/unknown + notification-log add/list/`exists`-idempotency-key,
+  ×{memory,pg}, + PG-only config-ciphertext-at-rest; 8 run without a DB),
+  `tests/integration/test_alert_channel_api.py` (8 —
+  create-redacts-but-stores-full / list+get redacted / 404 / patch enabled+config /
+  delete / blank-name 422). ruff + mypy strict clean. App boots (`/api/v1/health` 200,
+  `/api/v1/channels` list 200). Migration verified: `alembic upgrade head` from base on
+  a clean DB, single head `d4a1b2c3e5f6`, downgrade/upgrade round-trips.
+- **Schema/migrations:** head **`d4a1b2c3e5f6`** (`alert_channels`; `notification_logs`
+  with unique `(channel_id, monitor_id, transition_at)`).
 - **Deps:** unchanged.
-- **Config:** unchanged in S9.1 — `AlertPolicy` is a pure policy VO; S9.3 wires its
-  values from config. (`heartbeat_url`, `scheduler_poll_seconds`,
-  `scheduler_max_concurrency` from S6 remain.)
+- **Config:** unchanged in S9.2. `AlertPolicy` is still a pure VO; S9.3 wires it from
+  config. (`heartbeat_url`, `scheduler_*` from S6 remain.)
 - **Deployed:** no.
 
 ## Next action
 
-➡️ **Begin S9.2 — `AlertChannel`/`NotificationLog` persistence + channel CRUD API.**
-Add the `AlertChannel` entity (`type`: webhook|telegram|email, `name`, `config`,
-`enabled`) and `NotificationLog` entity (idempotency/audit — id/channel_id/monitor_id/
-transition_to/fired_at/ok/detail), their `AlertChannelRepository` +
-`NotificationLogRepository` ports + in-memory fakes + SQL repos + models + one Alembic
-migration, then the channel CRUD routes/DTOs. **Channel `config` secrets are write-only
-over the API and encrypted at rest via `SecretBox`** — redact/drop them in responses
-(see **sentinel-security** §1/§2; reuse the shared `infrastructure/db/secret_mapping.py`
-crypto from the auth-source repos). Write the failing repo-contract + API tests first
-(create stores encrypted config but redacts on read; list/get/patch/delete; secret never
-returned). The `Notifier` port + webhook/telegram adapters + the `AlertService` that
-loads recent transitions, runs `should_notify`, fires enabled channels **exactly once**
-(idempotent via `NotificationLog`), and logs the outcome are **S9.3** — it consumes the
-`StateTransition` **directly**, not via the S8 `EventBus`. See **sentinel-architecture**
-(add-a-capability recipe) and **sentinel-security**.
+➡️ **Begin S9.3 — `Notifier` adapters + `AlertService` wiring (finishes S9).** Add a
+`Notifier` port (send an alert to one channel; classify the outcome, never raise) with
+a **webhook** (POST JSON) and **telegram** (bot sendMessage) adapter (email can be a
+thin SMTP adapter or a parked stub — decide, keep scope tight). Add an `AlertService`
+(application) that consumes a **confirmed `StateTransition`** — read **directly**, not
+via the S8 `EventBus` — builds the `AlertPolicy` from config, runs pure
+`should_notify(...)`, and when it says notify, fans out to all **enabled** channels
+**exactly once** (skip a channel where `NotificationLogRepository.exists(channel_id,
+monitor_id, transition_at)` is already true), sending via the right `Notifier` per
+`channel.type` and recording a `NotificationLog` row per attempt (`ok`/`detail`). Wire
+it as a **fourth optional `CheckService` dep** (mirrors `states`/`rollups`/`events`,
+D20/D24/D25) so the manual path + every call site stay green; wire the channel repo +
+notification-log repo + notifiers in `deps.py` and the scheduler `build_runner`. The
+notification payload carries monitor name, new status, since, last error, and a deep
+link (SPEC §3.7). Write failing tests first: **exactly-once** per transition per channel
+(re-running the transition doesn't double-fire), disabled channels skipped, a below-
+threshold check fires nothing, `should_notify=suppressed` (flapping/cooldown) fires
+nothing, and a failing `Notifier` records `ok=false` without crashing the pipeline.
+Secrets: decrypt `config` only at send; never log the token/config or put it in the
+`NotificationLog.detail`. See **sentinel-architecture** + **sentinel-security**.
 
-**S9.3 open question:** provenance of `recent_transitions` for flap detection — a
-`NotificationLog` only records *fired* notifications, so flap history (which needs every
-transition incl. suppressed ones) needs either a dedicated store or reconstruction.
-Decide in S9.3.
+**Open question to resolve in S9.3 — provenance of `recent_transitions` for flap
+detection.** A `NotificationLog` only records *fired* notifications, so it can't be the
+flap-history source (suppressed transitions must still count toward the flap window).
+Options: (a) a dedicated `state_transitions` table written on every confirmed flip; (b)
+reconstruct recent transitions from `CheckResult`/`MonitorState` history; (c) log
+*every* considered transition to `NotificationLog` (even suppressed, `ok`/`detail`
+reflecting the decision) and derive history from it. Pick one before wiring flap damping
+end to end; the pure `should_notify` already accepts the history list either way.
 
 ---
 
@@ -117,7 +139,7 @@ Decide in S9.3.
 - [x] **S8** SSE live events
 - [ ] **S9** Alert channels + notify (cooldown + flap damping) _(split — see log)_
   - [x] **S9.1** Pure `should_notify` (flap damping + cooldown) + alert value objects
-  - [ ] **S9.2** `AlertChannel`/`NotificationLog` persistence + channel CRUD API
+  - [x] **S9.2** `AlertChannel`/`NotificationLog` persistence + channel CRUD API
   - [ ] **S9.3** `Notifier` adapters + `AlertService` wiring (idempotent via `NotificationLog`)
 - [ ] **S9a** Minimal API auth gate
 - [ ] **S10** SSRF guard + retention
@@ -142,6 +164,79 @@ Decide in S9.3.
 > Commit(s): <conventional commit subject lines>
 > Resume hint: <the very next concrete step>
 > ```
+
+### S9.2 — `AlertChannel`/`NotificationLog` persistence + channel CRUD API  · 2026-07-16
+Done: The alerting **persistence + CRUD** layer ships (SPEC §3.7, §4). Two entities:
+`AlertChannel` (`type` webhook|telegram|email, `name`, `config: dict`, `enabled`; no
+audit timestamps — SPEC §4 omits them) and `NotificationLog` (id/channel_id/monitor_id/
+transition_to/**transition_at**/fired_at/ok/detail — audit + idempotency). New
+`AlertChannelRepository` (add/get/list/update/delete) + `NotificationLogRepository`
+(add / `exists(channel_id, monitor_id, transition_at)` / list_for_monitor newest-first)
+ports, in-memory fakes, and SQL adapters (`infrastructure/db/alert_channel_repository.py`
+— both repos) + rows (`AlertChannelRow`, `NotificationLogRow`) + migration
+`d4a1b2c3e5f6` (`alert_channels`; `notification_logs` with a **unique
+`(channel_id, monitor_id, transition_at)`** constraint + `channel_id`/`monitor_id`
+indexes). **Channel `config` secrets are write-only:** encrypted at rest via `SecretBox`
+(`encrypt_secret_config`/`decrypt_secret_config` added to `secret_mapping.py`) and masked
+in every response (`redact_config`) — both keyed off the **same** new pure
+`is_secret_config_key` heuristic (a config key is secret if it contains
+token/secret/key/password/passwd), so encryption and redaction can never drift (mirrors
+D18 for headers). Only string secret values are encrypted (non-str like `port`/`use_tls`
+pass through). `AlertChannelService` (CRUD; `NotFoundError` → 404) + `POST/GET/GET{id}/
+PATCH/DELETE /api/v1/channels` routes with `AlertChannelCreate`/`Update`/`Response` DTOs
+(response masks secret config values). Wired `get_alert_channel_repository` +
+`get_alert_channel_service` in `deps.py` + registered the router in `main.py`. The
+notification-log repo has **no API surface** and is **not yet wired** into a composition
+root — S9.3's `AlertService` consumes it.
+Spec change: **SPEC §4 `NotificationLog` gained `transition_at`** (the confirmed flip
+time, distinct from `fired_at` = send time). The original field list (`transition_to` +
+`fired_at`) can't identify *which* transition a row belongs to — down→up→down repeats
+`transition_to`, and `fired_at≈now` — so exactly-once idempotency (SPEC §3.7) had no
+stable key. `(channel_id, monitor_id, transition_at)` is now the unique idempotency key.
+Tests: `tests/unit/domain/test_alert_channel.py` (21 collected — `is_secret_config_key`
+[parametrized secret/non-secret], `redact_config` mask/passthrough/no-mutate/empty,
+`AlertChannel` blank-name → `ValidationError`, `NotificationLog` construct);
+`tests/integration/test_alert_channel_repository.py` (17 with PG — channel CRUD contract
++ notification-log add/list/`exists` idempotency-key semantics, ×{memory,pg}; PG-only
+config-ciphertext-at-rest asserts `bot_token` stored encrypted, `chat_id` plaintext);
+`tests/integration/test_alert_channel_api.py` (8 — create redacts-but-stores-full /
+list+get redacted / 404 / patch enabled+config-replace / delete→404 / blank-name 422).
+Suite: **391 passed / 44 skipped** (no DB), +37; **435 passed** with PG (`sentinel_test`).
+ruff + mypy strict clean. App boots (`/api/v1/health` 200, `/api/v1/channels` list 200).
+Migration verified: `alembic upgrade head` from base on a clean scratch DB (chain ends at
+`d4a1b2c3e5f6`), single head, `downgrade -1` + re-`upgrade head` round-trips.
+Decisions: **D27** (channel-config secret handling via a shared `is_secret_config_key`
+classifier driving both at-rest encryption and API masking; `NotificationLog.transition_at`
++ the `(channel_id, monitor_id, transition_at)` unique idempotency key; `AlertChannel`
+carries no audit timestamps so its SQL repo needs no `Clock`; `/api/v1/channels` route;
+notification-log repo built + contract-tested now but wired in S9.3) added to PLAN §7.
+Files: `src/sentinel/domain/value_objects.py` (+`ChannelType`), `src/sentinel/domain/
+entities.py` (+`AlertChannel`, +`NotificationLog`, +`Any` import), `src/sentinel/domain/
+logic/redaction.py` (+`is_secret_config_key`, +`redact_config`), `src/sentinel/domain/
+ports.py` (+`AlertChannelRepository`, +`NotificationLogRepository`), `src/sentinel/
+infrastructure/db/secret_mapping.py` (+config crypto), `src/sentinel/infrastructure/db/
+models.py` (+`AlertChannelRow`, +`NotificationLogRow`), `src/sentinel/infrastructure/db/
+alert_channel_repository.py` (new — both SQL repos), `alembic/versions/
+d4a1b2c3e5f6_create_alert_tables.py` (new), `src/sentinel/application/
+alert_channel_service.py` (new), `src/sentinel/interface/api/schemas.py` (+channel DTOs),
+`src/sentinel/interface/api/channels.py` (new — router), `src/sentinel/interface/api/
+deps.py` + `src/sentinel/interface/main.py` (wire + register), `tests/support/fakes.py`
+(+2 fakes), the three new test files, and `SPEC.md` §4 (`NotificationLog.transition_at`).
+Follow-ups / parked: **S9.3** — `Notifier` port + webhook/telegram adapters + the
+`AlertService` that consumes the transition, runs `should_notify`, fans out to enabled
+channels exactly-once (via `NotificationLog.exists`), and logs; wire as a 4th optional
+`CheckService` dep + into the scheduler. **Open:** `recent_transitions` provenance for
+flap detection (dedicated table vs reconstruct vs log-every-transition — see Next
+action). Per-type config **schema** validation (webhook needs `url`, telegram
+`bot_token`+`chat_id`, email SMTP fields) is deferred — the entity only enforces a
+non-blank name in v1; the S9.3 notifier handles/validates missing keys. Non-string
+secret config values are not encrypted (credentials are strings by convention).
+Commit(s): `feat(alerts): alert-channel + notification-log persistence + channel CRUD (S9.2)`.
+Resume hint: start S9.3 — write the failing `AlertService` test (a confirmed down
+transition fires each enabled channel exactly once; re-firing the same transition is a
+no-op via `NotificationLog.exists`; disabled/suppressed/below-threshold fire nothing;
+a failing notifier records `ok=false`) before the `Notifier` port + adapters and the
+`CheckService` wiring. Decide the `recent_transitions` source first.
 
 ### S9.1 — Pure `should_notify` (flap damping + cooldown) + alert value objects  · 2026-07-15
 Done: The I/O-free notify decision (SPEC §3.7) ships ahead of any channels/adapters.

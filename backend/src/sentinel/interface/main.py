@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 
-from sentinel.interface.api import auth_sources, events, health, imports, monitors
+from sentinel.interface.api import auth_sources, channels, events, health, imports, monitors
 from sentinel.interface.api.errors import register_exception_handlers
 
 API_V1_PREFIX = "/api/v1"
@@ -13,6 +13,7 @@ def create_app() -> FastAPI:
     app.include_router(monitors.router, prefix=API_V1_PREFIX)
     app.include_router(imports.router, prefix=API_V1_PREFIX)
     app.include_router(auth_sources.router, prefix=API_V1_PREFIX)
+    app.include_router(channels.router, prefix=API_V1_PREFIX)
     app.include_router(events.router, prefix=API_V1_PREFIX)
     return app
 

@@ -253,7 +253,9 @@ AlertChannel
   enabled: bool
 
 NotificationLog                       # idempotency / audit
-  id, channel_id, monitor_id, transition_to, fired_at, ok: bool, detail: str|None
+  id, channel_id, monitor_id, transition_to, transition_at, fired_at, ok: bool, detail: str|None
+  # transition_at = the confirmed flip time (StateTransition.at); fired_at = send time.
+  # (channel_id, monitor_id, transition_at) is unique → one fire per transition per channel.
 
 AuthSource                            # login / token-generating request (§3.9)
   id: UUID

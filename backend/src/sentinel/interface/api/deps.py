@@ -9,6 +9,7 @@ from functools import lru_cache
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from sentinel.application.alert_channel_service import AlertChannelService
 from sentinel.application.auth_source_service import AuthSourceService
 from sentinel.application.auth_token_service import AuthTokenService
 from sentinel.application.check_service import CheckService
@@ -16,6 +17,7 @@ from sentinel.application.monitor_service import MonitorService
 from sentinel.application.stats_service import StatsService
 from sentinel.config import get_settings
 from sentinel.domain.ports import (
+    AlertChannelRepository,
     AuthSourceRepository,
     Clock,
     EventBus,
@@ -24,6 +26,7 @@ from sentinel.domain.ports import (
     TokenStore,
 )
 from sentinel.infrastructure.clock import SystemClock
+from sentinel.infrastructure.db.alert_channel_repository import SqlAlertChannelRepository
 from sentinel.infrastructure.db.auth_source_repository import SqlAuthSourceRepository
 from sentinel.infrastructure.db.check_result_repository import SqlCheckResultRepository
 from sentinel.infrastructure.db.check_rollup_repository import SqlCheckRollupRepository
@@ -73,6 +76,14 @@ def get_monitor_service() -> MonitorService:
 
 def get_auth_source_service() -> AuthSourceService:
     return AuthSourceService(get_auth_source_repository())
+
+
+def get_alert_channel_repository() -> AlertChannelRepository:
+    return SqlAlertChannelRepository(get_session_factory(), secret_box=get_secret_box())
+
+
+def get_alert_channel_service() -> AlertChannelService:
+    return AlertChannelService(get_alert_channel_repository())
 
 
 def get_auth_token_service() -> AuthTokenService:

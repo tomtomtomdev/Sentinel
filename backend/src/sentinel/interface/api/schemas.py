@@ -21,19 +21,21 @@ from sentinel.domain.entities import (
     DEFAULT_TIMEOUT_SECONDS,
     DEFAULT_TOKEN_TYPE,
     MIN_THRESHOLD,
+    AlertChannel,
     AuthSource,
     CheckResult,
     Monitor,
     TokenState,
 )
 from sentinel.domain.logic.auth import token_status
-from sentinel.domain.logic.redaction import MASK, redact
+from sentinel.domain.logic.redaction import MASK, redact, redact_config
 from sentinel.domain.value_objects import (
     Assertion,
     Auth,
     AuthSourceMode,
     AuthType,
     BodyKind,
+    ChannelType,
     ClientAuth,
     ErrorKind,
     ExpiryKind,
@@ -594,3 +596,68 @@ def _redact_oauth_dto(oauth: OAuthConfig | None) -> OAuthConfigDTO | None:
         username=oauth.username,
         password=MASK if oauth.password else None,
     )
+
+
+# --- Alert channels (SPEC §3.7, §5) -----------------------------------------
+
+
+class AlertChannelCreate(BaseModel):
+    """Request body for POST /channels. Shape validation only; the `name`
+    non-blank invariant is enforced by the `AlertChannel` entity → 422. `config`
+    carries the real secret values to persist (encrypted at rest)."""
+
+    name: str
+    type: ChannelType
+    config: dict[str, Any] = Field(default_factory=dict)
+    enabled: bool = True
+
+    def to_entity(self) -> AlertChannel:
+        return AlertChannel(
+            name=self.name,
+            type=self.type,
+            config=dict(self.config),
+            enabled=self.enabled,
+        )
+
+
+class AlertChannelUpdate(BaseModel):
+    """Partial update for PATCH /channels/{id}. Only set fields are applied;
+    passing `config` replaces it wholesale (secrets included)."""
+
+    name: str | None = None
+    type: ChannelType | None = None
+    config: dict[str, Any] | None = None
+    enabled: bool | None = None
+
+    def apply_to(self, existing: AlertChannel) -> AlertChannel:
+        changes: dict[str, Any] = {}
+        for name in self.model_fields_set:
+            value = getattr(self, name)
+            if name == "type":
+                changes["type"] = ChannelType(value)
+            elif name == "config":
+                changes["config"] = dict(value) if value is not None else {}
+            else:
+                changes[name] = value
+        return replace(existing, **changes)
+
+
+class AlertChannelResponse(BaseModel):
+    """A channel with secret `config` values masked (SPEC §3.7, §6). The key is
+    kept so the user sees the setting exists, but no secret value is ever returned."""
+
+    id: UUID
+    type: ChannelType
+    name: str
+    config: dict[str, Any]
+    enabled: bool
+
+    @classmethod
+    def from_entity(cls, channel: AlertChannel) -> AlertChannelResponse:
+        return cls(
+            id=channel.id,
+            type=channel.type,
+            name=channel.name,
+            config=redact_config(channel.config),
+            enabled=channel.enabled,
+        )

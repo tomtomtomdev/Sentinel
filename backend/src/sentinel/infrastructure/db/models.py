@@ -8,7 +8,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import Column, DateTime
+from sqlalchemy import Column, DateTime, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Field, SQLModel
 
@@ -89,6 +89,45 @@ class MonitorStateRow(SQLModel, table=True):
     last_check_at: datetime | None = Field(
         default=None, sa_column=Column(DateTime(timezone=True), nullable=True)
     )
+
+
+class AlertChannelRow(SQLModel, table=True):
+    """Alert channel (SPEC §3.7, §4). `config` is JSONB; the secret values inside
+    it (bot tokens, passwords, signing secrets) are stored encrypted by the
+    repository. No audit timestamps in v1 (SPEC §4)."""
+
+    __tablename__ = "alert_channels"
+
+    id: uuid.UUID = Field(primary_key=True)
+    type: str
+    name: str
+    config: dict[str, Any] = Field(sa_column=Column(JSONB, nullable=False))
+    enabled: bool
+
+
+class NotificationLogRow(SQLModel, table=True):
+    """Audit + idempotency ledger for fired alerts (SPEC §3.7, §4). Unique on
+    `(channel_id, monitor_id, transition_at)` so a transition fires exactly once
+    per channel; no secrets, so no encryption."""
+
+    __tablename__ = "notification_logs"
+    __table_args__ = (
+        UniqueConstraint(
+            "channel_id",
+            "monitor_id",
+            "transition_at",
+            name="uq_notification_logs_channel_monitor_transition",
+        ),
+    )
+
+    id: uuid.UUID = Field(primary_key=True)
+    channel_id: uuid.UUID = Field(index=True)
+    monitor_id: uuid.UUID = Field(index=True)
+    transition_to: str
+    transition_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
+    fired_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
+    ok: bool
+    detail: str | None = Field(default=None)
 
 
 class AuthSourceRow(SQLModel, table=True):

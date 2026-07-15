@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
+from typing import Any
 from uuid import UUID, uuid4
 
 from sentinel.domain.errors import ValidationError
@@ -11,6 +12,7 @@ from sentinel.domain.value_objects import (
     Auth,
     AuthSourceMode,
     BodyKind,
+    ChannelType,
     ErrorKind,
     ExpirySpec,
     HttpMethod,
@@ -132,6 +134,42 @@ class MonitorState:
     consecutive_failures: int = 0
     consecutive_successes: int = 0
     last_check_at: datetime | None = None
+
+
+@dataclass
+class AlertChannel:
+    """A configured alert destination (SPEC §3.7, §4). `type` decides how `config`
+    is interpreted (webhook URL, telegram bot token + chat id, SMTP settings); the
+    secret values inside `config` are encrypted at rest and redacted in every
+    response (SPEC §6). No audit timestamps in v1 (SPEC §4 omits them)."""
+
+    name: str
+    type: ChannelType
+    config: dict[str, Any] = field(default_factory=dict)
+    enabled: bool = True
+    id: UUID = field(default_factory=uuid4)
+
+    def __post_init__(self) -> None:
+        if not self.name.strip():
+            raise ValidationError("alert channel name must not be blank")
+
+
+@dataclass
+class NotificationLog:
+    """One record of a fired (or attempted) alert (SPEC §3.7, §4) — the audit trail
+    and the idempotency key. `transition_at` is the confirmed flip time
+    (`StateTransition.at`); `fired_at` is when the send was attempted. A repository
+    enforces one row per `(channel_id, monitor_id, transition_at)`, which is how a
+    transition fires exactly one notification per channel."""
+
+    channel_id: UUID
+    monitor_id: UUID
+    transition_to: MonitorStatus
+    transition_at: datetime
+    fired_at: datetime
+    ok: bool
+    detail: str | None = None
+    id: UUID = field(default_factory=uuid4)
 
 
 @dataclass

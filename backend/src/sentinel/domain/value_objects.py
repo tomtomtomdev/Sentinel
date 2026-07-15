@@ -174,6 +174,16 @@ Event = CheckCompleted | StateTransition
 # --- Alerting (SPEC §3.7) ---------------------------------------------------
 
 
+class ChannelType(StrEnum):
+    """How an alert is delivered (SPEC §3.7). Each type interprets the channel's
+    `config` dict its own way; secret config values are encrypted at rest and
+    redacted in responses."""
+
+    WEBHOOK = "webhook"
+    TELEGRAM = "telegram"
+    EMAIL = "email"
+
+
 class NotifyKind(StrEnum):
     """What a `should_notify` decision calls for (SPEC §3.7). `transition` is a
     normal per-flip alert; `flapping` is the single summary emitted when a monitor

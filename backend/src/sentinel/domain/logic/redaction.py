@@ -5,6 +5,8 @@ value is masked."""
 
 from __future__ import annotations
 
+from typing import Any
+
 MASK = "••••"
 
 # Header names whose value is always a secret (matched case-insensitively).
@@ -54,3 +56,23 @@ def redact(headers: dict[str, str]) -> dict[str, str]:
         else:
             redacted[name] = MASK
     return redacted
+
+
+# Substrings that mark an alert-channel config key as carrying a secret value
+# (case-insensitive), e.g. `bot_token`, `client_secret`, `smtp_password`, `api_key`.
+_SECRET_CONFIG_SUBSTRINGS = ("token", "secret", "key", "password", "passwd")
+
+
+def is_secret_config_key(key: str) -> bool:
+    """Whether an `AlertChannel.config` key carries a secret value (SPEC §3.7, §6).
+    The single source of truth for "which config values are secret", shared by API
+    redaction and at-rest encryption so the two can never drift (cf. `is_secret_header`)."""
+    lowered = key.lower()
+    return any(token in lowered for token in _SECRET_CONFIG_SUBSTRINGS)
+
+
+def redact_config(config: dict[str, Any]) -> dict[str, Any]:
+    """Return a copy of a channel `config` with secret values masked (SPEC §6). The
+    key is kept so the user sees the setting exists; non-secret values pass through
+    unchanged. Never mutates the input."""
+    return {key: (MASK if is_secret_config_key(key) else value) for key, value in config.items()}

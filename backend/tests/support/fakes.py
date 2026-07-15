@@ -12,11 +12,13 @@ from datetime import datetime
 from uuid import UUID
 
 from sentinel.domain.entities import (
+    AlertChannel,
     AuthSource,
     CheckResult,
     CheckRollup,
     Monitor,
     MonitorState,
+    NotificationLog,
     TokenState,
 )
 from sentinel.domain.ports import Clock
@@ -202,6 +204,66 @@ class InMemoryTokenStore:
     async def save(self, token_state: TokenState) -> TokenState:
         self._store[token_state.auth_source_id] = copy.deepcopy(token_state)
         return copy.deepcopy(token_state)
+
+
+class InMemoryAlertChannelRepository:
+    """`AlertChannelRepository` backed by a dict. Stores plaintext (the SQL
+    adapter's at-rest encryption is an infrastructure concern, transparent to
+    callers)."""
+
+    def __init__(self) -> None:
+        self._store: dict[UUID, AlertChannel] = {}
+
+    async def add(self, channel: AlertChannel) -> AlertChannel:
+        stored = copy.deepcopy(channel)
+        self._store[stored.id] = stored
+        return copy.deepcopy(stored)
+
+    async def get(self, channel_id: UUID) -> AlertChannel | None:
+        found = self._store.get(channel_id)
+        return copy.deepcopy(found) if found is not None else None
+
+    async def list(self) -> list[AlertChannel]:
+        return [copy.deepcopy(c) for c in self._store.values()]
+
+    async def update(self, channel: AlertChannel) -> AlertChannel:
+        if channel.id not in self._store:
+            raise LookupError(channel.id)
+        stored = copy.deepcopy(channel)
+        self._store[channel.id] = stored
+        return copy.deepcopy(stored)
+
+    async def delete(self, channel_id: UUID) -> bool:
+        return self._store.pop(channel_id, None) is not None
+
+
+class InMemoryNotificationLogRepository:
+    """`NotificationLogRepository` backed by a list. `exists` keys on
+    `(channel_id, monitor_id, transition_at)`, mirroring the SQL adapter's
+    uniqueness so idempotency behaves identically under the contract test."""
+
+    def __init__(self) -> None:
+        self._store: list[NotificationLog] = []
+
+    async def add(self, entry: NotificationLog) -> NotificationLog:
+        stored = copy.deepcopy(entry)
+        self._store.append(stored)
+        return copy.deepcopy(stored)
+
+    async def exists(self, *, channel_id: UUID, monitor_id: UUID, transition_at: datetime) -> bool:
+        return any(
+            e.channel_id == channel_id
+            and e.monitor_id == monitor_id
+            and e.transition_at == transition_at
+            for e in self._store
+        )
+
+    async def list_for_monitor(
+        self, monitor_id: UUID, *, limit: int | None = 100
+    ) -> list[NotificationLog]:
+        matches = [e for e in self._store if e.monitor_id == monitor_id]
+        matches.sort(key=lambda e: e.fired_at, reverse=True)
+        return [copy.deepcopy(e) for e in matches[:limit]]
 
 
 class FakeHeartbeat:

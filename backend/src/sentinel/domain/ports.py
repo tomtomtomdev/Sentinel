@@ -7,11 +7,13 @@ from typing import Protocol
 from uuid import UUID
 
 from sentinel.domain.entities import (
+    AlertChannel,
     AuthSource,
     CheckResult,
     CheckRollup,
     Monitor,
     MonitorState,
+    NotificationLog,
     TokenState,
 )
 from sentinel.domain.value_objects import Event, ProbeRequest, ProbeResponse
@@ -108,6 +110,41 @@ class TokenStore(Protocol):
     async def load(self, auth_source_id: UUID) -> TokenState | None: ...
 
     async def save(self, token_state: TokenState) -> TokenState: ...
+
+
+class AlertChannelRepository(Protocol):
+    """Persistence boundary for `AlertChannel`s (SPEC §3.7). The SQL adapter
+    encrypts secret `config` values at rest via `SecretBox`; the entity always
+    carries plaintext. `update` raises `LookupError` on an unknown id (the service
+    maps it to `NotFoundError`)."""
+
+    async def add(self, channel: AlertChannel) -> AlertChannel: ...
+
+    async def get(self, channel_id: UUID) -> AlertChannel | None: ...
+
+    async def list(self) -> list[AlertChannel]: ...
+
+    async def update(self, channel: AlertChannel) -> AlertChannel: ...
+
+    async def delete(self, channel_id: UUID) -> bool: ...
+
+
+class NotificationLogRepository(Protocol):
+    """Append-only audit trail + idempotency ledger for fired alerts (SPEC §3.7,
+    §4). `exists` answers "has this channel already been notified about this
+    transition?" keyed by `(channel_id, monitor_id, transition_at)`, so a confirmed
+    transition fires exactly once per channel. `list_for_monitor` returns a
+    monitor's log newest-first for audit."""
+
+    async def add(self, entry: NotificationLog) -> NotificationLog: ...
+
+    async def exists(
+        self, *, channel_id: UUID, monitor_id: UUID, transition_at: datetime
+    ) -> bool: ...
+
+    async def list_for_monitor(
+        self, monitor_id: UUID, *, limit: int | None = 100
+    ) -> list[NotificationLog]: ...
 
 
 class SecretBox(Protocol):

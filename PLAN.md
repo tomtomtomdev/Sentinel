@@ -673,6 +673,32 @@ stable (after S7), against a mock server if needed.
   *fired* notifications, so flap history (needs suppressed transitions too) requires a
   dedicated store or reconstruction; decided in S9.3.
 
+- **D27 — Channel-config secrets use one shared key classifier for encryption + API
+  masking (as headers do); `NotificationLog` gains `transition_at` as the idempotency
+  key.** S9.2 persists alert channels + the notification log. **Config secrets:** an
+  `AlertChannel.config` value is secret iff its **key** matches the new pure
+  `is_secret_config_key` heuristic (`token`/`secret`/`key`/`password`/`passwd`
+  substrings) — the same single classifier drives both at-rest encryption
+  (`encrypt_secret_config`/`decrypt_secret_config` in `secret_mapping.py`, only string
+  values) and API redaction (`redact_config` masks with `••••`, keeping the key so the
+  user sees the setting exists), so the two can never drift — the exact pattern D18
+  established for secret *headers* via `is_secret_header`. Secrets are therefore
+  write-only over the API (accepted on create/update, masked in every response) and
+  ciphertext at rest, satisfying SPEC §6. `AlertChannel` deliberately carries **no
+  audit timestamps** (SPEC §4 lists none), so its SQL repo needs no `Clock` — unlike
+  `Monitor`/`AuthSource` (D10). **Idempotency key:** SPEC §4's `NotificationLog`
+  (`transition_to` + `fired_at`) could not identify *which* transition a row belongs to
+  — a down→up→down sequence repeats `transition_to` and `fired_at≈now` — so exactly-once
+  (SPEC §3.7) had no stable key. Added **`transition_at`** (the confirmed flip time =
+  `StateTransition.at`, distinct from `fired_at` = send time) and a **unique
+  `(channel_id, monitor_id, transition_at)`** constraint; the
+  `NotificationLogRepository.exists(...)` idempotency check keys on it. SPEC §4 updated.
+  The notification-log repo (add/`exists`/`list_for_monitor`) is built + contract-tested
+  now but has no API surface and is wired into a composition root only in S9.3 (its sole
+  consumer, `AlertService`). Route path is `/api/v1/channels`. Per-type config *schema*
+  validation (webhook `url`, telegram `bot_token`+`chat_id`, email SMTP) is deferred to
+  S9.3's notifier — the entity enforces only a non-blank name in v1.
+
 _Append new decisions here as `Dn — <decision>: <why>` when slices force a choice._
 
 ---
