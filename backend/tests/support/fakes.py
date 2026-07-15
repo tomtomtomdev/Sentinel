@@ -3,7 +3,10 @@ adapters so the same contract test can run against either (PLAN D4)."""
 
 from __future__ import annotations
 
+import asyncio
 import copy
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import replace
 from datetime import datetime
 from uuid import UUID
@@ -17,7 +20,7 @@ from sentinel.domain.entities import (
     TokenState,
 )
 from sentinel.domain.ports import Clock
-from sentinel.domain.value_objects import ProbeRequest, ProbeResponse
+from sentinel.domain.value_objects import Event, ProbeRequest, ProbeResponse
 
 
 class FixedClock:
@@ -210,6 +213,40 @@ class FakeHeartbeat:
 
     async def ping(self) -> None:
         self.pings += 1
+
+
+class FakeEventBus:
+    """An `EventBus` that records every published event in `.published` (for
+    assertions) and also fans out to live subscribers with unbounded queues, so it
+    doubles as a working bus. Mirrors `InProcessEventBus` behaviour minus the
+    drop-oldest back-pressure (tests publish only a handful of events)."""
+
+    def __init__(self) -> None:
+        self.published: list[Event] = []
+        self._subscribers: set[asyncio.Queue[Event]] = set()
+
+    @property
+    def subscriber_count(self) -> int:
+        return len(self._subscribers)
+
+    async def publish(self, event: Event) -> None:
+        self.published.append(event)
+        for queue in list(self._subscribers):
+            queue.put_nowait(event)
+
+    @asynccontextmanager
+    async def subscribe(self) -> AsyncIterator[AsyncIterator[Event]]:
+        queue: asyncio.Queue[Event] = asyncio.Queue()
+        self._subscribers.add(queue)
+
+        async def drain() -> AsyncIterator[Event]:
+            while True:
+                yield await queue.get()
+
+        try:
+            yield drain()
+        finally:
+            self._subscribers.discard(queue)
 
 
 class FakeHttpProbe:

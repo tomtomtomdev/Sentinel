@@ -22,17 +22,25 @@ from sentinel.domain.errors import NotFoundError, ProbeError
 from sentinel.domain.logic.assertions import evaluate_assertions
 from sentinel.domain.logic.auth import apply_injection
 from sentinel.domain.logic.rollups import fold_results_into_rollup, hour_bucket
-from sentinel.domain.logic.state import advance_state, initial_state
+from sentinel.domain.logic.state import advance_state, initial_state, transition_between
 from sentinel.domain.ports import (
     AuthSourceRepository,
     CheckResultRepository,
     CheckRollupRepository,
     Clock,
+    EventBus,
     HttpProbe,
     MonitorRepository,
     MonitorStateRepository,
 )
-from sentinel.domain.value_objects import AssertionResult, ErrorKind, ProbeRequest, ProbeResponse
+from sentinel.domain.value_objects import (
+    AssertionResult,
+    CheckCompleted,
+    ErrorKind,
+    ProbeRequest,
+    ProbeResponse,
+    StateTransition,
+)
 
 
 class CheckService:
@@ -45,6 +53,7 @@ class CheckService:
         clock: Clock,
         states: MonitorStateRepository | None = None,
         rollups: CheckRollupRepository | None = None,
+        events: EventBus | None = None,
         auth_sources: AuthSourceRepository | None = None,
         auth: AuthTokenService | None = None,
     ) -> None:
@@ -54,6 +63,7 @@ class CheckService:
         self._clock = clock
         self._states = states
         self._rollups = rollups
+        self._events = events
         self._auth_sources = auth_sources
         self._auth = auth
 
@@ -63,8 +73,9 @@ class CheckService:
             raise NotFoundError(f"monitor {monitor_id} not found")
 
         result = await self._probe_and_record(monitor)
-        await self._advance_state(monitor, result)
+        transition = await self._advance_state(monitor, result)
         await self._advance_rollup(monitor, result)
+        await self._publish_events(result, transition)
         return result
 
     async def _probe_and_record(self, monitor: Monitor) -> CheckResult:
@@ -94,14 +105,16 @@ class CheckService:
             finished_at=finished_at,
         )
 
-    async def _advance_state(self, monitor: Monitor, result: CheckResult) -> None:
-        """Fold the result into the monitor's persisted `MonitorState` (SPEC §3.8).
-        Every check bumps the counters + `last_check_at`; `status`/`since` flip only
-        on a threshold crossing. No-op when no state repository is wired (e.g. the
-        pre-S7.2 manual-check path). The confirmed `StateTransition` is not consumed
-        yet — S8 emits the event and S9 fires the alert."""
+    async def _advance_state(self, monitor: Monitor, result: CheckResult) -> StateTransition | None:
+        """Fold the result into the monitor's persisted `MonitorState` (SPEC §3.8)
+        and return the confirmed `StateTransition`, if any. Every check bumps the
+        counters + `last_check_at`; `status`/`since` flip only on a threshold
+        crossing. Returns `None` (no transition) when nothing flipped, or when no
+        state repository is wired (e.g. a manual-check path without state). The
+        transition is published as a `status_changed` event by `_publish_events`
+        (S8); S9 turns the same transition into an alert."""
         if self._states is None:
-            return
+            return None
         current = await self._states.get(monitor.id) or initial_state(
             monitor.id, result.finished_at
         )
@@ -112,6 +125,29 @@ class CheckService:
             recovery_threshold=monitor.recovery_threshold,
         )
         await self._states.save(updated)
+        return transition_between(current, updated)
+
+    async def _publish_events(
+        self, result: CheckResult, transition: StateTransition | None
+    ) -> None:
+        """Push live events to connected SSE clients (SPEC §3.6). A `check_completed`
+        fires for every recorded check; a `status_changed` (the `StateTransition`)
+        only on a confirmed flip. No-op when no event bus is wired. Publishing never
+        blocks or raises, so a slow/absent subscriber can't affect the check."""
+        if self._events is None:
+            return
+        await self._events.publish(
+            CheckCompleted(
+                monitor_id=result.monitor_id,
+                at=result.finished_at,
+                success=result.success,
+                status_code=result.status_code,
+                latency_ms=result.latency_ms,
+                error=result.error,
+            )
+        )
+        if transition is not None:
+            await self._events.publish(transition)
 
     async def _advance_rollup(self, monitor: Monitor, result: CheckResult) -> None:
         """Recompute the result's hour-bucket `CheckRollup` from raw and upsert it

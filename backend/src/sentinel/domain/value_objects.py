@@ -152,6 +152,26 @@ class StateTransition:
 
 
 @dataclass(frozen=True)
+class CheckCompleted:
+    """A `check_completed` live event (SPEC §3.6) — a small, secret-free summary of
+    one recorded check, pushed to connected SSE clients so dashboards update without
+    polling. Deliberately narrower than the `CheckResult` entity (no body sample, no
+    assertion detail) so no probed/injected value can ever leak over the stream."""
+
+    monitor_id: UUID
+    at: datetime
+    success: bool
+    status_code: int | None = None
+    latency_ms: int | None = None
+    error: ErrorKind | None = None
+
+
+# A live event carried by the `EventBus` (SPEC §3.6). `StatusChanged` is just the
+# confirmed `StateTransition`; the interface layer serializes each to its SSE frame.
+Event = CheckCompleted | StateTransition
+
+
+@dataclass(frozen=True)
 class Stats:
     """Computed uptime/latency over a window (SPEC §3.5, §5). `status`/`since` are
     intentionally absent — they come from the monitor's `MonitorState`. A latency

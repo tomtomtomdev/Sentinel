@@ -610,6 +610,35 @@ stable (after S7), against a mock server if needed.
   for the one-row-per-hour upsert, carries no secrets (no `SecretBox`), and stamps
   `updated_at` via the injected `Clock` (D10). Rollup retention (13mo, distinct from
   raw pruning) is deferred to S10.
+- **D25 — Live events go through an in-process `EventBus` port; `check_completed`
+  fires every check, `status_changed` only on a confirmed transition; cross-process
+  delivery is a deferred Redis drop-in.** S8 adds an `EventBus` Protocol
+  (`publish(event)` + `subscribe() -> async ctx mgr yielding an AsyncIterator[Event]`)
+  with an `InProcessEventBus` adapter (per-subscriber bounded `asyncio.Queue`; a full
+  queue **drops its oldest** event so a slow SSE client stays current; `publish` never
+  blocks or raises) and a `FakeEventBus` that records + fans out. `GET /api/v1/events`
+  is a `text/event-stream` `StreamingResponse` that subscribes and serializes each
+  event to an SSE frame (SPEC §5); the frame's event-name + JSON shape live in
+  `interface` (transport), the event VOs in `domain`. Two event types: a new
+  `CheckCompleted` VO (a **narrow, secret-free summary** — monitor_id/at/success/
+  status_code/latency_ms/error, deliberately smaller than `CheckResult` so no probed/
+  injected value can leak over the wire) and the existing `StateTransition` reused
+  verbatim as `status_changed` (no duplicate VO). This is **where the `StateTransition`
+  from `advance_state` is finally consumed**: `CheckService._advance_state` now returns
+  it, `_publish_events` emits `check_completed` always and `status_changed` when the
+  transition is non-None — so UNKNOWN→up/down (first confirmation) and up↔down both
+  push, but a below-threshold check pushes only `check_completed`. `events` is a
+  **third optional `CheckService` dep** (mirrors `states`/`rollups`, D20/D24) so the
+  manual path and every existing call site stay green. The bus is **process-local**:
+  it's wired into the **API** composition root only (`get_event_bus`, an `@lru_cache`
+  singleton shared by the check pipeline and `/events`), so API-triggered checks reach
+  their own SSE clients. The **scheduler worker is deliberately NOT wired** — an
+  in-process bus can't cross to the API's clients, so wiring it would be a no-op that
+  falsely implies delivery; scheduler→SSE needs a Redis-backed adapter behind the same
+  port (parked). Tested in-process by driving the endpoint's `StreamingResponse.
+  body_iterator` (the exact client-facing stream) rather than `httpx.ASGITransport`,
+  which buffers a response to completion and so hangs on an infinite SSE stream;
+  real-wire framing was smoke-tested against a live uvicorn.
 
 _Append new decisions here as `Dn — <decision>: <why>` when slices force a choice._
 

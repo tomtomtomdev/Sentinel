@@ -15,7 +15,14 @@ from sentinel.application.check_service import CheckService
 from sentinel.application.monitor_service import MonitorService
 from sentinel.application.stats_service import StatsService
 from sentinel.config import get_settings
-from sentinel.domain.ports import AuthSourceRepository, Clock, HttpProbe, SecretBox, TokenStore
+from sentinel.domain.ports import (
+    AuthSourceRepository,
+    Clock,
+    EventBus,
+    HttpProbe,
+    SecretBox,
+    TokenStore,
+)
 from sentinel.infrastructure.clock import SystemClock
 from sentinel.infrastructure.db.auth_source_repository import SqlAuthSourceRepository
 from sentinel.infrastructure.db.check_result_repository import SqlCheckResultRepository
@@ -24,6 +31,7 @@ from sentinel.infrastructure.db.engine import create_engine, create_session_fact
 from sentinel.infrastructure.db.monitor_repository import SqlMonitorRepository
 from sentinel.infrastructure.db.monitor_state_repository import SqlMonitorStateRepository
 from sentinel.infrastructure.db.token_store import SqlTokenStore
+from sentinel.infrastructure.events import InProcessEventBus
 from sentinel.infrastructure.probe import HttpxProbe
 from sentinel.infrastructure.secrets import FernetSecretBox
 
@@ -83,6 +91,15 @@ def get_http_probe() -> HttpProbe:
     return HttpxProbe()
 
 
+@lru_cache
+def get_event_bus() -> EventBus:
+    """The process-wide in-memory event bus for SSE live updates (SPEC §3.6). One
+    instance so the API's check pipeline and every `GET /events` stream share
+    subscribers. Cross-process delivery (worker → API) would swap in a Redis-backed
+    adapter behind the same port (see PROGRESS)."""
+    return InProcessEventBus()
+
+
 def get_stats_service() -> StatsService:
     factory = get_session_factory()
     clock = get_clock()
@@ -105,6 +122,7 @@ def get_check_service() -> CheckService:
         clock=clock,
         states=SqlMonitorStateRepository(factory),
         rollups=SqlCheckRollupRepository(factory, clock=clock),
+        events=get_event_bus(),
         auth_sources=get_auth_source_repository(),
         auth=get_auth_token_service(),
     )

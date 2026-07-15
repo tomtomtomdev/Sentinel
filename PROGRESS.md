@@ -20,7 +20,28 @@
 
 ## Current state
 
-- **Phase:** **S7a complete — rollups & long-window stats.** Hourly `CheckRollup`s
+- **Phase:** **S8 complete — SSE live events.** `GET /api/v1/events` is now a
+  `text/event-stream` `StreamingResponse` that streams two event types to connected
+  dashboards (SPEC §3.6): `check_completed` after **every** recorded `CheckResult`
+  and `status_changed` on a **confirmed** state transition. New `EventBus` port
+  (`publish(event)` + `subscribe()` async ctx-mgr yielding an `AsyncIterator[Event]`)
+  with an in-process adapter (`infrastructure/events.py` — per-subscriber bounded
+  `asyncio.Queue`, **drop-oldest** back-pressure, `publish` never blocks/raises) and a
+  `FakeEventBus` (records `.published` + fans out). Two event VOs: a new
+  `CheckCompleted` (a narrow, **secret-free** summary — monitor_id/at/success/
+  status_code/latency_ms/error, smaller than `CheckResult`) and the existing
+  `StateTransition` reused verbatim as `status_changed`; the SSE frame's name + JSON
+  shape (SPEC §5) live in `interface/api/events.py` (`to_sse_frame`). **This is where
+  the `StateTransition` from `advance_state` is finally consumed:** `CheckService.
+  _advance_state` now returns it and `_publish_events` emits `check_completed` always
+  and `status_changed` when non-None. `events` is a **third optional** `CheckService`
+  dep (mirrors `states`/`rollups`) so the manual path + every call site stay green.
+  The bus is **process-local**, wired into the **API** root only (`get_event_bus`, an
+  `@lru_cache` singleton shared by the check pipeline and `/events`); the **scheduler
+  worker is deliberately not wired** — an in-process bus can't reach API SSE clients,
+  so cross-process delivery needs a Redis-backed adapter behind the same port (parked).
+  No migration, no new config, no new deps. S9 turns the same transition into an alert.
+- **Prior phase:** **S7a complete — rollups & long-window stats.** Hourly `CheckRollup`s
   now back the 7d/30d stat windows so a long query never scans raw rows (SPEC §6,
   PLAN D7). Two new pure functions in `domain/logic/rollups.py`: `hour_bucket(at)`
   (UTC hour truncation) and `fold_results_into_rollup(existing | None, results) ->
@@ -44,7 +65,7 @@
   `get_check_service`) and the worker `build_runner`. Rollup retention (13mo,
   separate from raw pruning) lands with **S10**. The `StateTransition` from
   `advance_state` still stays **unconsumed** until S8 (event) / S9 (alert).
-- **Prior phase:** **S7.3 complete — S7 (State, stats & history) is DONE.** The three
+- **Earlier phase:** **S7.3 complete — S7 (State, stats & history) is DONE.** The three
   §3.5 read endpoints ship, all through a new `StatsService`
   (`application/stats_service.py`) that orchestrates existing ports (no rules):
   `GET /monitors/{id}/results?from&to&limit` (windowed, newest-first history, 404
@@ -61,7 +82,7 @@
   `window_start(window, now)` helper in `domain/logic/stats.py`. Wired
   `get_stats_service` in `deps.py`. The `StateTransition` from `advance_state`
   remains **unconsumed** until S8 (event) / S9 (alert).
-- **Earlier phase:** **S7.2 complete** — `MonitorState` persistence + the check pipeline
+- **Older phase:** **S7.2 complete** — `MonitorState` persistence + the check pipeline
   now advances it. New `MonitorStateRepository` port (`get(monitor_id) ->
   MonitorState | None`, `save(state)` upsert — one row per monitor) with an
   in-memory fake + `SqlMonitorStateRepository` (`monitor_states` table, migration
@@ -71,39 +92,28 @@
   result.finished_at)`), folds via `advance_state(...)` with the monitor's
   thresholds, and `save`s — on **every** path incl. transport-failure results (a
   `ProbeError` result advances the counters as a failure).
-- **Older phase:** **S7.1 complete** — pure state + stats logic (S7 split into
+- **Oldest phase:** **S7.1 complete** — pure state + stats logic (S7 split into
   S7.1/S7.2/S7.3). `domain/logic/state.py` — `initial_state`, `advance_state`
   (folds a `CheckResult`: counters + `last_check_at` bump every check,
   `status`/`since` flip only on a threshold crossing), `transition_between`;
   `domain/logic/stats.py` — `compute_stats` (window-filtered uptime %, nearest-rank
   p50/p95/p99). Value objects `MonitorStatus`/`StatsWindow`/`StateTransition`/
   `Stats` + the `MonitorState` entity (SPEC §4).
-- **Oldest phase:** **S6 complete** — scheduler runner (PLAN D21). A worker
-  (`python -m sentinel.infrastructure.scheduler` / `just worker`) loops over the
-  pure `select_due_monitors` decision: each cycle it lists monitors, selects the
-  **enabled, due** ones (per-monitor **jitter**, **skip-don't-backfill**), probes
-  each via the existing `CheckService.run_check` under a bounded-concurrency
-  semaphore, records the run time, and pings the **dead-man's-switch** `Heartbeat`
-  (`HEARTBEAT_URL`, no-op when unset) — every cycle, even when nothing is due. A
-  single failing check is logged + skipped so the cycle never crashes. Schedule
-  state is an in-memory last-run map **seeded on startup from each monitor's most
-  recent `CheckResult`** so a restart resumes the cadence rather than re-probing all
-  at once (no new `last_check_at` column — `MonitorState` is S7).
-- **Last green commit:** S7.3 (`feat(stats): results/stats/summary read endpoints via
-  StatsService (S7.3)`); S7a staged.
-- **Test suite:** `just test` (no DB) → **326 passed, 35 skipped** (+24 from S7a).
-  With `TEST_DATABASE_URL=…/sentinel_test` → **361 passed** (no skips). New: `tests/
-  unit/domain/test_rollups.py` (13 — hour_bucket truncation; fold counts/sum/nearest-
-  rank + failure/transport handling + idempotency + bucket-scoping + no-bucket raise;
-  fold-vs-`compute_stats` per-bucket parity; aggregate sum/uptime + empty→no-data +
-  transport-only→null percentiles + fold→aggregate matches raw), `tests/integration/
-  test_check_rollup_repository.py` (5 × {memory, pg} — get-missing, all-field round-
-  trip incl. `updated_at` stamp, upsert-one-row-per-bucket, window filter inclusive+
-  ordered, monitor-scoped), `tests/integration/test_check_pipeline_rollup.py` (5 —
-  same-hour→one rollup recomputed, cross-hour→two, failed-assertion counts, transport
-  failure folds with no latency, no-repo→still records). `test_monitor_stats_api.py`
-  +1 (7d/30d served from rollups) and its harness folds rollups; `test_monitor_api.py`
-  harness now also wires the rollup fake.
+- **Last green commit:** S7a (`feat(stats): hourly rollups + long-window stats from
+  rollups (S7a)`); S8 staged.
+- **Test suite:** `just test` (no DB) → **341 passed, 35 skipped** (+15 from S8).
+  With `TEST_DATABASE_URL=…/sentinel_test` → **376 passed** (no skips). New: `tests/
+  unit/interface/test_sse_serialization.py` (3 — `to_sse_frame` renders the SPEC §5
+  `status_changed` shape + a secret-free `check_completed`, incl. transport-failure
+  nulls), `tests/unit/infrastructure/test_event_bus.py` (5 — deliver to a subscriber,
+  fan-out to many, deregister on context exit, no-subscriber no-op, full-queue
+  drop-oldest never blocks), `tests/integration/test_events_api.py` (7 —
+  `check_completed` on every check, `status_changed` only on a confirmed transition
+  (unknown→down→up) with fields, publish without a state repo, `run_check` with no
+  bus, route registered, and a connected client observes both events by draining the
+  endpoint's `StreamingResponse.body_iterator`). Real-wire SSE framing smoke-tested
+  against a live uvicorn (health 200; `content-type: text/event-stream`; both frames
+  correct).
 - **Schema/migrations:** head **`c9d2e5f80a14`** (`check_rollups`, composite PK
   `(monitor_id, bucket_start)`).
 - **Deps:** unchanged.
@@ -113,21 +123,20 @@
 
 ## Next action
 
-➡️ **Begin S8 — SSE live events (SPEC §3.6).** Add an in-process event bus port +
-adapter and `GET /api/v1/events` (a `text/event-stream` `StreamingResponse`), and
-emit two event types: `check_completed` after every recorded `CheckResult`, and
-`status_changed` on a confirmed transition. **This is where the `StateTransition`
-finally gets consumed:** `CheckService` already computes the new state via
-`advance_state`; call `transition_between(before, after)` and, when it returns a
-transition, publish `status_changed`. Write the failing integration test first (a
-connected SSE client receives a `check_completed` event after `run_check`, and a
-`status_changed` only when a threshold crossing occurs), then the bus (fan-out to
-per-subscriber async queues, back-pressure/drop policy, unsubscribe on disconnect),
-the endpoint, and the `CheckService` publish calls (a new **optional** `events` dep,
-mirroring `states`/`rollups`, so the manual-check path and existing tests stay
-green). Keep the bus a `domain` port with an in-memory fake; the concrete lives in
-`infrastructure`. See **sentinel-architecture** (add-a-capability recipe). S9 then
-turns the same transition into an alert with cooldown/flap damping.
+➡️ **Begin S9 — Alert channels + notify (SPEC §3.7).** On a confirmed transition (the
+`StateTransition` S8 already surfaces from `advance_state`), notify all enabled channels
+**exactly once, idempotently**, with re-notify cooldown + flap damping. Add the
+`AlertChannel` entity + CRUD (`webhook` / `telegram` / `email`; **channel secrets are
+write-only** over the API and encrypted at rest via `SecretBox` — see
+**sentinel-security**), a `Notifier` port + adapters, and a `NotificationLog` for
+idempotency. Keep the notify **decision pure**: `should_notify(...)` in `domain/logic/`
+— flap damping (≥`flap_threshold` transitions within `flap_window_seconds` → one
+"flapping" summary, resume when stable) and cooldown (`renotify_after_seconds`) are
+pure functions over recent transition history + `now`. Write the failing `should_notify`
+unit tests first (SPEC §7 "Transition/alert" + "Flap damping"), then the channel
+entity/repo/migration, the `Notifier` adapters, and the application wiring that consumes
+the transition. Alerting reads the transition **directly** (not via the S8 `EventBus`);
+the two are orthogonal. See **sentinel-architecture** (add-a-capability recipe).
 
 ---
 
@@ -151,7 +160,7 @@ turns the same transition into an alert with cooldown/flap damping.
   - [x] **S7.2** `MonitorState` persistence (repo + migration) + wire into check pipeline
   - [x] **S7.3** `GET /results`, `GET /stats`, `?include=summary` endpoints
 - [x] **S7a** Rollups & long-window stats
-- [ ] **S8** SSE live events
+- [x] **S8** SSE live events
 - [ ] **S9** Alert channels + notify (cooldown + flap damping)
 - [ ] **S9a** Minimal API auth gate
 - [ ] **S10** SSRF guard + retention
@@ -176,6 +185,70 @@ turns the same transition into an alert with cooldown/flap damping.
 > Commit(s): <conventional commit subject lines>
 > Resume hint: <the very next concrete step>
 > ```
+
+### S8 — SSE live events  · 2026-07-15
+Done: `GET /api/v1/events` streams Server-Sent Events to connected dashboards
+(SPEC §3.6) so they update without polling. Two event types: `check_completed`
+after **every** recorded `CheckResult` and `status_changed` on a **confirmed** state
+transition — the point where the `StateTransition` from `advance_state` is finally
+consumed. New `EventBus` domain port: `publish(event)` (fan-out, never blocks/raises)
++ `subscribe()` returning an async context manager whose iterator yields events until
+the subscriber disconnects, then deregisters. `InProcessEventBus`
+(`infrastructure/events.py`) gives each subscriber a bounded `asyncio.Queue`; a full
+queue **drops its oldest** event so a slow SSE client stays current instead of stalling
+the check pipeline, and a leaked/gone subscriber self-heals on the next publish (its
+generator wakes, the write fails, cancellation runs the deregister). Two event VOs in
+`domain/value_objects.py`: a new **`CheckCompleted`** (a narrow, **secret-free** summary
+— monitor_id/at/success/status_code/latency_ms/error, deliberately smaller than the
+`CheckResult` entity so no probed/injected value can leak over the wire) and the
+existing **`StateTransition`** reused verbatim as `status_changed` (no duplicate VO);
+`Event = CheckCompleted | StateTransition`. The SSE frame — event-name line + compact
+JSON `data:` line + terminating blank line (SPEC §5) — is built by `to_sse_frame` in
+`interface/api/events.py` (transport concern); the endpoint is a `StreamingResponse`
+over `text/event-stream` that subscribes and serializes each event.
+`CheckService._advance_state` now **returns** the `StateTransition | None`, and a new
+`_publish_events(result, transition)` emits `check_completed` always + `status_changed`
+when the transition is non-None (so UNKNOWN→up/down first-confirmation and up↔down both
+push; a below-threshold check pushes only `check_completed`). `events` is a **third
+optional** `CheckService` dep (mirrors `states`/`rollups`, D20/D24) so the manual path
+and every existing call site stay green. Wired into the **API** composition root only
+(`get_event_bus`, an `@lru_cache` singleton shared by the check pipeline and `/events`).
+Tests: `tests/unit/interface/test_sse_serialization.py` (3), `tests/unit/
+infrastructure/test_event_bus.py` (5), `tests/integration/test_events_api.py` (7 — 4
+CheckService-publish + route-registered + 2 end-to-end draining the endpoint's
+`StreamingResponse.body_iterator`). Suite: **341 passed / 35 skipped** (no DB); **376
+with PG** (`sentinel_test`). ruff + mypy strict clean. App boots (`/api/v1/health` 200);
+real-wire SSE framing smoke-tested against a live uvicorn (`content-type:
+text/event-stream`; both frames byte-correct).
+Decisions: **D25** (in-process `EventBus` port + drop-oldest adapter; `check_completed`
+every check / `status_changed` only on a confirmed transition; new secret-free
+`CheckCompleted` VO + reuse `StateTransition`; frame shape in `interface`; third optional
+`CheckService.events` dep; API-only wiring, scheduler deliberately unwired pending a
+Redis-backed cross-process bus; tested via `body_iterator` because `httpx.ASGITransport`
+buffers and hangs on an infinite stream) added to PLAN §7.
+Files: `src/sentinel/domain/value_objects.py` (+`CheckCompleted`, +`Event` alias),
+`src/sentinel/domain/ports.py` (+`EventBus`), `src/sentinel/infrastructure/events.py`
+(new — `InProcessEventBus`), `src/sentinel/application/check_service.py` (`events` dep,
+`_advance_state` returns the transition, +`_publish_events`),
+`src/sentinel/interface/api/events.py` (new — router + `to_sse_frame`),
+`src/sentinel/interface/api/deps.py` (+`get_event_bus`, wire into `get_check_service`),
+`src/sentinel/interface/main.py` (register router), `tests/support/fakes.py`
+(+`FakeEventBus`), `tests/unit/interface/{__init__,test_sse_serialization}.py` (new),
+`tests/unit/infrastructure/test_event_bus.py` (new),
+`tests/integration/test_events_api.py` (new).
+Follow-ups / parked: **cross-process delivery** (scheduler worker → API SSE clients)
+needs a Redis-backed `EventBus` adapter behind the same port — until then, only
+API-triggered (manual) checks push live events; the worker's `CheckService` is
+intentionally left without an `events` dep (an in-process bus there would be a no-op
+that falsely implies delivery). No server-initiated keepalive comment yet (disconnect
+cleanup relies on cancellation + self-heal-on-next-publish; add a keepalive tick if idle
+clients need faster reclamation). SSE has **no API-auth gate** yet — S9a covers auth
+across the API surface. `max_queue` is a hardcoded default (100), not config.
+Commit(s): `feat(events): SSE live events — EventBus port + /events stream (S8)`.
+Resume hint: start S9 — write failing unit tests for pure `should_notify` (cooldown +
+flap damping over recent transition history, `now` injected) before the `AlertChannel`
+entity/repo/migration, the `Notifier` port + adapters, `NotificationLog` idempotency,
+and the application wiring that consumes the `StateTransition` on a confirmed flip.
 
 ### S7a — Rollups & long-window stats  · 2026-07-14
 Done: Long-window (7d/30d) stats are now served from hourly `CheckRollup`s instead

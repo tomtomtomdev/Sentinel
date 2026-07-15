@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+from contextlib import AbstractAsyncContextManager
 from datetime import datetime
 from typing import Protocol
 from uuid import UUID
@@ -12,7 +14,7 @@ from sentinel.domain.entities import (
     MonitorState,
     TokenState,
 )
-from sentinel.domain.value_objects import ProbeRequest, ProbeResponse
+from sentinel.domain.value_objects import Event, ProbeRequest, ProbeResponse
 
 
 class Clock(Protocol):
@@ -128,6 +130,20 @@ class Heartbeat(Protocol):
     `HEARTBEAT_URL` is configured."""
 
     async def ping(self) -> None: ...
+
+
+class EventBus(Protocol):
+    """In-process publish/subscribe for live updates (SPEC §3.6). `publish` fans an
+    `Event` out to every current subscriber and must never block the caller or raise
+    — a slow or vanished SSE client can't be allowed to stall the check pipeline.
+    `subscribe` returns an async context manager whose iterator yields events until
+    the subscriber's stream closes, then deregisters it. The in-process adapter only
+    delivers within one process; cross-process delivery (worker → API clients) is a
+    later Redis-backed drop-in behind this port."""
+
+    async def publish(self, event: Event) -> None: ...
+
+    def subscribe(self) -> AbstractAsyncContextManager[AsyncIterator[Event]]: ...
 
 
 class HttpProbe(Protocol):
