@@ -32,6 +32,11 @@ class Settings(BaseSettings):
     # Base URL of the dashboard, used to build the deep link in an alert (SPEC §3.7).
     # Empty (the default) omits the link. No trailing slash needed.
     dashboard_base_url: str = ""
+    # SSRF guard (SPEC §6): outbound user-supplied URLs (monitor probes, auth-source
+    # logins, webhook channels) are resolve-then-validated and refused when they hit
+    # loopback/link-local/private/metadata ranges. Disable only for trusted
+    # single-host self-hosting.
+    ssrf_guard_enabled: bool = True
     # Static API credential (S9a): every /api/v1 route except /health requires
     # `Authorization: Bearer <AUTH_TOKEN>`. Empty disables the gate — dev only;
     # never expose the API without it (PLAN §6).

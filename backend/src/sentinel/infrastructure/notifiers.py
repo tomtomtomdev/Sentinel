@@ -6,8 +6,9 @@ Every adapter **never raises**: a channel outage, timeout, or non-2xx status is
 classified into a `NotifyResult(ok=False, detail=...)` so it becomes a
 `NotificationLog` row, not a crashed check pipeline. The `detail` is a short,
 **secret-free** classification (``"HTTP 500"``, the exception class name) — never the
-target URL or bot token, which are themselves secrets (SPEC §6). The outbound URL is
-otherwise trusted here; the SSRF guard (S10) will wrap these before sending."""
+target URL or bot token, which are themselves secrets (SPEC §6). The webhook's
+user-supplied URL goes through the SSRF guard before sending (SPEC §6, S10); a
+blocked URL is an `ok=False` result. Telegram's host is fixed and needs no guard."""
 
 from __future__ import annotations
 
@@ -16,6 +17,7 @@ import httpx
 from sentinel.domain.entities import AlertChannel
 from sentinel.domain.logic.notify import format_alert_message
 from sentinel.domain.value_objects import AlertNotification, NotifyResult
+from sentinel.infrastructure.url_guard import SsrfUrlGuard
 
 DEFAULT_TIMEOUT_SECONDS = 10.0
 
@@ -56,13 +58,20 @@ async def _post(
 class WebhookNotifier:
     """POSTs the alert payload as JSON to the channel's configured `url`."""
 
-    def __init__(self, client: httpx.AsyncClient | None = None) -> None:
+    def __init__(
+        self, client: httpx.AsyncClient | None = None, *, guard: SsrfUrlGuard | None = None
+    ) -> None:
         self._client = client
+        self._guard = guard
 
     async def send(self, channel: AlertChannel, notification: AlertNotification) -> NotifyResult:
         url = channel.config.get("url")
         if not isinstance(url, str) or not url:
             return NotifyResult(ok=False, detail="webhook channel missing 'url'")
+        if self._guard is not None:
+            reason = await self._guard.check(url)
+            if reason is not None:
+                return NotifyResult(ok=False, detail=reason)
         return await _post(self._client, url, json=_webhook_payload(notification))
 
 

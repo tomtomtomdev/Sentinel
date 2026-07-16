@@ -57,6 +57,7 @@ from sentinel.infrastructure.heartbeat import HttpxHeartbeat, NullHeartbeat
 from sentinel.infrastructure.notifiers import EmailNotifier, TelegramNotifier, WebhookNotifier
 from sentinel.infrastructure.probe import HttpxProbe
 from sentinel.infrastructure.secrets import FernetSecretBox
+from sentinel.infrastructure.url_guard import GuardedHttpProbe, SsrfUrlGuard
 
 logger = logging.getLogger(__name__)
 
@@ -153,14 +154,15 @@ def build_runner(settings: Settings) -> SchedulerRunner:
     rollups = SqlCheckRollupRepository(factory, clock=clock)
     sources = SqlAuthSourceRepository(factory, clock=clock, secret_box=secret_box)
     tokens = SqlTokenStore(factory, secret_box=secret_box)
-    probe = HttpxProbe()
+    url_guard = SsrfUrlGuard(enabled=settings.ssrf_guard_enabled)
+    probe = GuardedHttpProbe(HttpxProbe(), url_guard)
     auth = AuthTokenService(sources=sources, tokens=tokens, probe=probe, clock=clock)
     alerts = AlertService(
         channels=SqlAlertChannelRepository(factory, secret_box=secret_box),
         notifications=SqlNotificationLogRepository(factory),
         transitions=SqlStateTransitionRepository(factory),
         notifiers={
-            ChannelType.WEBHOOK: WebhookNotifier(),
+            ChannelType.WEBHOOK: WebhookNotifier(guard=url_guard),
             ChannelType.TELEGRAM: TelegramNotifier(),
             ChannelType.EMAIL: EmailNotifier(),
         },

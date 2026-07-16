@@ -756,6 +756,32 @@ stable (after S7), against a mock server if needed.
   onto. `UnauthorizedError` lives in `interface/` (not `domain/errors.py`): a static
   HTTP credential is a transport concern, not a domain rule.
 
+- **D30 — S10.1 SSRF guard: pure classification in domain, resolve-then-validate in
+  infrastructure, one guard instance wrapping the shared probe + injected into the
+  webhook notifier; blocked = data, never a crash.** Two pure functions
+  (`domain/logic/url_guard.py`): `invalid_url_reason` (non-http(s) scheme / no host)
+  and `blocked_ip_reason` (loopback, link-local incl. `169.254.169.254`, private,
+  unspecified, multicast, reserved; IPv4-mapped IPv6 unwrapped; unparseable = blocked,
+  fail-closed). Reasons are secret-free — never the URL/host/IP — because they land in
+  `NotificationLog.detail` and refresh errors, and a webhook URL is itself a secret.
+  `SsrfUrlGuard` (`infrastructure/url_guard.py`) resolves via an **injected resolver**
+  (default: the loop's `getaddrinfo`) and rejects if **any** resolved IP is blocked
+  (defeats DNS rebinding deterministically in tests); a literal-IP host skips
+  resolution; a guard-time resolution failure **passes** so the real send fails and is
+  classified `dns`, keeping error kinds honest. `GuardedHttpProbe` decorates the
+  `HttpProbe` port and raises `ProbeError(ErrorKind.BLOCKED)` pre-send — since the
+  check pipeline and `AuthTokenService` share one probe instance, wrapping it at both
+  composition roots guards monitor probes **and** auth-source logins with no call-site
+  changes; the blocked probe becomes a failed `CheckResult` (`error=blocked`, new
+  `ErrorKind` member + SPEC §4 update) and the blocked login a recorded
+  `last_refresh_error`. `WebhookNotifier` takes the guard directly (`NotifyResult
+  ok=False`); Telegram's host is fixed (no guard); the operator-supplied
+  `HEARTBEAT_URL` is deliberately unguarded (config, not user input — a private
+  watchdog is legitimate). `SSRF_GUARD_ENABLED` (default **on**) short-circuits
+  `check` to pass. Parked: redirects are followed by httpx *inside* one send, so a
+  public URL 302→private is not re-validated per hop (needs an httpx request hook;
+  S14 hardening).
+
 _Append new decisions here as `Dn — <decision>: <why>` when slices force a choice._
 
 ---

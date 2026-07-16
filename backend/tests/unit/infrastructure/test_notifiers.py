@@ -20,6 +20,7 @@ from sentinel.domain.value_objects import (
     NotifyKind,
 )
 from sentinel.infrastructure.notifiers import EmailNotifier, TelegramNotifier, WebhookNotifier
+from sentinel.infrastructure.url_guard import SsrfUrlGuard
 
 WEBHOOK_URL = "https://hooks.example.com/secret-path-token"
 BOT_TOKEN = "12345:super-secret-bot-token"  # noqa: S105 -- test fixture, not a real secret
@@ -91,6 +92,37 @@ async def test_webhook_missing_url_is_not_ok() -> None:
     channel = AlertChannel(name="wh", type=ChannelType.WEBHOOK, config={})
     result = await WebhookNotifier().send(channel, _notification())
     assert result.ok is False
+
+
+@respx.mock
+async def test_webhook_ssrf_blocked_url_is_not_ok_and_never_sends() -> None:
+    """S10: the guard refuses a webhook URL targeting a blocked range *before* any
+    HTTP happens; the failure is a secret-free `NotifyResult`, never a raise."""
+    route = respx.post("http://169.254.169.254/hook").mock(return_value=httpx.Response(200))
+    channel = AlertChannel(
+        name="wh", type=ChannelType.WEBHOOK, config={"url": "http://169.254.169.254/hook"}
+    )
+
+    result = await WebhookNotifier(guard=SsrfUrlGuard()).send(channel, _notification())
+
+    assert result.ok is False
+    assert result.detail and "blocked" in result.detail
+    assert "169.254.169.254" not in result.detail  # the URL is a secret — never in detail
+    assert not route.called
+
+
+@respx.mock
+async def test_webhook_guard_passes_a_public_url_through() -> None:
+    async def public_resolver(host: str) -> list[str]:
+        return ["93.184.216.34"]
+
+    route = respx.post(WEBHOOK_URL).mock(return_value=httpx.Response(200))
+    result = await WebhookNotifier(guard=SsrfUrlGuard(resolver=public_resolver)).send(
+        _webhook_channel(), _notification()
+    )
+
+    assert result.ok is True
+    assert route.called
 
 
 @respx.mock

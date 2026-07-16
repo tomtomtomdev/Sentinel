@@ -62,13 +62,15 @@ class AssertionResult:
 
 class ErrorKind(StrEnum):
     """Why a check failed (SPEC §4). Transport failures map to the first four;
-    `assertion` means the request succeeded but a predicate failed."""
+    `assertion` means the request succeeded but a predicate failed; `blocked`
+    means the SSRF guard refused the URL before anything was sent (SPEC §6)."""
 
     TIMEOUT = "timeout"
     DNS = "dns"
     CONNECTION = "connection"
     TLS = "tls"
     ASSERTION = "assertion"
+    BLOCKED = "blocked"
     UNKNOWN = "unknown"
 
 

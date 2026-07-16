@@ -20,7 +20,23 @@
 
 ## Current state
 
-- **Phase:** **S9a complete — minimal API auth gate.** One `require_auth` FastAPI
+- **Phase:** **S10.1 complete — SSRF guard on every outbound user-supplied URL.**
+  Resolve-then-validate (D30): pure `invalid_url_reason` + `blocked_ip_reason` in
+  `domain/logic/url_guard.py` (non-http(s)/host-less URLs; loopback, link-local incl.
+  `169.254.169.254`, private, unspecified, multicast, reserved; IPv4-mapped v6
+  unwrapped; unparseable = blocked). `SsrfUrlGuard` (`infrastructure/url_guard.py`)
+  resolves via an injected resolver (default: loop `getaddrinfo`) and blocks if **any**
+  resolved IP is denied — DNS rebinding caught; literal-IP hosts skip resolution;
+  guard-time resolution failure passes so the real send classifies `dns`.
+  `GuardedHttpProbe` wraps the **shared** probe at both composition roots, so monitor
+  probes **and** auth-source logins are guarded with zero call-site changes: blocked
+  probe → failed `CheckResult` with new `ErrorKind.BLOCKED` (SPEC §4 updated); blocked
+  login → `TokenState.last_refresh_error`. `WebhookNotifier(guard=...)` refuses a
+  blocked webhook URL as `NotifyResult(ok=False)` **before** any HTTP; reasons are
+  secret-free (never URL/host/IP). `SSRF_GUARD_ENABLED=true` default; `.env.example`
+  documents the trade-off. Telegram (fixed host) + `HEARTBEAT_URL` (operator config)
+  deliberately unguarded.
+- **Prior phase:** **S9a complete — minimal API auth gate.** One `require_auth` FastAPI
   dependency (`interface/api/auth.py`) guards **every** `/api/v1/*` router except the
   `/health` liveness probe — reads, writes, and the SSE `/events` stream all demand
   `Authorization: Bearer <AUTH_TOKEN>` (`AUTH_TOKEN` in `config.py`), compared with
@@ -101,10 +117,25 @@
   `MonitorState` advances via `advance_state`; §3.5 read endpoints via `StatsService`;
   hourly `CheckRollup`s back 7d/30d; `GET /events` streams `check_completed`/
   `status_changed`. S5b (auth source) + S6 (scheduler + heartbeat) complete beneath.
-- **Last green commit:** S9.3 (`feat(alerts): Notifier adapters + AlertService —
-  idempotent fan-out, flap history (S9.3)`); S9a staged.
-- **Test suite:** `just test` (no DB) → **434 passed, 47 skipped** (+13 from S9a).
-  With `TEST_DATABASE_URL=…/sentinel_test` → **481 passed** (no skips). S9a added:
+- **Last green commit:** S9a (`feat(auth): minimal API auth gate — Bearer AUTH_TOKEN
+  on all /api/v1 (S9a)`); S10.1 staged.
+- **Test suite:** `just test` (no DB) → **483 passed, 47 skipped** (+49 from S10.1).
+  With `TEST_DATABASE_URL=…/sentinel_test` → **530 passed** (no skips). S10.1 added:
+  `tests/unit/domain/test_url_guard.py` (32 collected — scheme/host rejection incl.
+  no-URL-echo, every blocked range with a named reason + no-IP-echo, IPv4-mapped v6,
+  public passes incl. the 172.32.0.1 boundary, unparseable-IP fail-closed),
+  `tests/unit/infrastructure/test_url_guard.py` (9 — public pass, DNS rebinding
+  blocked, any-private-among-many blocks, literal IP + bad scheme skip resolution,
+  disabled guard passes without resolving, resolver failure passes through,
+  `GuardedHttpProbe` raises `ProbeError(BLOCKED)` pre-send / delegates when allowed),
+  webhook-guard additions in `test_notifiers.py` (2 — blocked URL → `ok=False` +
+  "blocked" detail + no HTTP + no URL leak; public URL passes through), and
+  `tests/integration/test_check_pipeline_ssrf.py` (3 — blocked monitor URL → one
+  recorded failed check `error=blocked` + inner probe untouched; guard disabled →
+  request sent; blocked auth-source login → `last_refresh_error` recorded, no raise).
+  Real-wire smoke: default `getaddrinfo` resolver blocks `http://localhost` (loopback)
+  and passes `https://example.com`; app boots (`/api/v1/health` 200). Earlier S9a
+  detail:
   `tests/integration/test_auth_gate.py` (13 — 401 envelope + `WWW-Authenticate` on
   missing/wrong/non-Bearer credentials; valid token accepted; one route per router
   gated incl. SSE `/events`; `/health` stays open; empty-token dev mode open).
@@ -150,20 +181,23 @@
 
 ## Next action
 
-➡️ **Begin S10 — SSRF guard + retention.** Two halves (PLAN §5; sentinel-security §3):
-**(1) SSRF guard** — one resolve-then-validate URL guard (reject non-http(s) schemes,
-then resolve the host and reject loopback / link-local incl. `169.254.169.254` /
-private / unspecified / multicast for **every** resolved IP), applied to every outbound
-user-supplied URL: the probe (monitor URLs), the auth-source login request, and the
-**webhook notifier** (parked from S9.3). Toggled by `SSRF_GUARD_ENABLED` (default
-**on**). A blocked URL yields a failed `CheckResult` / refresh error / `NotifyResult
-(ok=False)` with a clear reason — never a crash or silent success. Write failing tests
-first: each blocked range rejected, public host passes, toggle flips behaviour, and
-DNS-rebinding (public name → private IP) caught — the guard is pure-ish (inject the
-resolver). **(2) Retention** — a pruning job for raw `CheckResult`s (per SPEC §6
-retention) + `state_transitions` (parked from S9.3) and the 13-mo rollup window;
-idempotent, tested for "prunes old, keeps new, second run is a no-op". Likely a split:
-S10.1 guard, S10.2 retention.
+➡️ **Begin S10.2 — retention pruning (finishes S10).** A pruning job (SPEC §6
+retention): raw `CheckResult`s pruned by age (default **30 days**),
+`state_transitions` pruned with the same cutoff (parked from S9.3), and
+`check_rollups` pruned at **13 months** (parked from S7a). Add `prune_before(cutoff)
+-> int` to the three repos (port + in-memory fake + SQL adapter — plain deletes, no
+migration), a `RetentionService` (`application/`) that computes cutoffs from config
+(`RETENTION_RAW_DAYS=30`, `RETENTION_ROLLUP_DAYS=396`) via the injected `Clock`, and
+scheduler wiring that runs it at most once per `RETENTION_PRUNE_INTERVAL_SECONDS`
+(default 3600). Write failing tests first: each repo prunes old / keeps new / second
+run deletes 0 (idempotent), ×{memory,pg}; the service applies the right cutoff per
+store; the runner triggers on the interval, not every cycle. SPEC's per-monitor row
+cap is optional ("and/or") — age-only, park the cap.
+
+**Parked follow-ups from S10.1** (not blockers): httpx follows redirects *within* one
+send, so a public URL that 302s to a private address is not re-validated per hop —
+closing it needs an httpx request event hook inside `HttpxProbe` (S14 hardening).
+Guard reasons are static strings; no per-check debug logging of the resolved IPs.
 
 **Parked follow-ups from S9a** (not blockers): the gate is all-or-nothing global
 (no writes-only mode, no per-route scopes — S14 if ever needed); rate limiting on the
@@ -171,9 +205,9 @@ S10.1 guard, S10.2 retention.
 credential (multi-user auth is post-v1); S13 compose/runbook **must set `AUTH_TOKEN`**
 (empty = open, D29).
 
-**Parked follow-ups from S9.3** (not blockers): the webhook notifier trusts its
-user-supplied URL — **SSRF-guard it in S10** (resolve-then-validate, same guard as the
-probe). Email is a **parked stub** (SMTP delivery deferred; an email channel currently
+**Parked follow-ups from S9.3** (not blockers): ~~the webhook notifier trusts its
+user-supplied URL~~ — **done in S10.1** (guarded, `NotifyResult(ok=False)` on a
+blocked URL). Email is a **parked stub** (SMTP delivery deferred; an email channel currently
 logs `ok=false` every transition). Per-monitor flap/cooldown overrides remain parked
 (policy is global). Periodic "still down" reminder emitter still parked (cooldown
 defaults off). `state_transitions` has no retention/pruning yet (S10 retention). The
@@ -207,7 +241,9 @@ notifiers open a short-lived `httpx.AsyncClient` per send (no shared pooled clie
   - [x] **S9.2** `AlertChannel`/`NotificationLog` persistence + channel CRUD API
   - [x] **S9.3** `Notifier` adapters + `AlertService` wiring (idempotent via `NotificationLog`)
 - [x] **S9a** Minimal API auth gate
-- [ ] **S10** SSRF guard + retention
+- [ ] **S10** SSRF guard + retention _(split — S10.1 guard / S10.2 retention)_
+  - [x] **S10.1** SSRF guard (probe + auth-source login + webhook notifier)
+  - [ ] **S10.2** Retention pruning (raw results + state transitions + rollups)
 - [ ] **S11** Frontend scaffold
 - [ ] **S12** Frontend charts + live
 - [ ] **S13** Containerize & deploy
@@ -229,6 +265,66 @@ notifiers open a short-lived `httpx.AsyncClient` per send (no shared pooled clie
 > Commit(s): <conventional commit subject lines>
 > Resume hint: <the very next concrete step>
 > ```
+
+### S10.1 — SSRF guard on outbound user-supplied URLs  · 2026-07-16
+Done: Every outbound user-supplied URL is now resolve-then-validated before anything
+is sent (SPEC §6, sentinel-security §3): monitor probe URLs, auth-source login URLs,
+and webhook channel URLs. Two pure functions in `domain/logic/url_guard.py` —
+`invalid_url_reason` (rejects non-http(s) schemes and host-less URLs syntactically)
+and `blocked_ip_reason` (classifies one resolved IP: loopback, link-local incl. the
+metadata endpoint `169.254.169.254`, private incl. `fc00::/7`, unspecified,
+multicast, reserved; IPv4-mapped IPv6 is unwrapped so `::ffff:10.0.0.1` can't smuggle
+v4 ranges; an unparseable value is blocked, fail-closed). Reasons are short and
+**secret-free** — never the URL/host/IP, since they flow into
+`NotificationLog.detail` and refresh errors and a webhook URL is itself a secret.
+`SsrfUrlGuard` (`infrastructure/url_guard.py`) does the I/O half: resolve the host
+via an **injected resolver** (default = the event loop's `getaddrinfo`; tests script
+it) and block if **any** resolved IP is denied — which is exactly what catches DNS
+rebinding (public-looking name → private A record). A literal-IP host is classified
+without resolution; a guard-time resolution failure passes the URL through so the
+real send fails and gets classified `dns`, not `blocked` (error kinds stay honest).
+`GuardedHttpProbe` decorates the `HttpProbe` port, raising
+`ProbeError(ErrorKind.BLOCKED)` **before** the inner probe opens a connection — and
+because the check pipeline and `AuthTokenService` share one probe instance, wrapping
+it at both composition roots (`deps.get_http_probe`/`get_url_guard`, scheduler
+`build_runner`) guards probes **and** logins with zero call-site changes: a blocked
+monitor URL is one recorded failed `CheckResult` (`error=blocked` — new `ErrorKind`
+member; SPEC §4 enum updated, §6 expanded) and a blocked login lands in
+`TokenState.last_refresh_error`. `WebhookNotifier` takes the guard directly and
+returns `NotifyResult(ok=False, detail="blocked: …")` without sending. Toggle:
+`SSRF_GUARD_ENABLED` (default **on**; `.env.example` section documents when off is
+acceptable). Telegram (fixed `api.telegram.org` host) and the operator-configured
+`HEARTBEAT_URL` are deliberately unguarded (not user input).
+Tests: `tests/unit/domain/test_url_guard.py` (32 collected), `tests/unit/
+infrastructure/test_url_guard.py` (9), `test_notifiers.py` +2,
+`tests/integration/test_check_pipeline_ssrf.py` (3). Suite: **483 passed / 47
+skipped** (no DB, +49); **530 passed** with PG (`sentinel_test`). ruff + mypy strict
+clean. App boots (`/api/v1/health` 200). Real-wire: the default resolver blocks
+`http://localhost` (loopback) and passes `https://example.com`.
+Decisions: **D30** (pure classification in domain / resolve in infrastructure with
+an injected resolver; one guard instance wrapping the shared probe covers probe +
+auth login; webhook guarded directly; blocked = data never a crash; secret-free
+reasons; resolution failure defers to the real send's `dns`; redirect re-validation
+parked to S14) added to PLAN §7.
+Files: `src/sentinel/domain/logic/url_guard.py` (new),
+`src/sentinel/infrastructure/url_guard.py` (new — `SsrfUrlGuard`,
+`GuardedHttpProbe`), `src/sentinel/domain/value_objects.py` (+`ErrorKind.BLOCKED`),
+`src/sentinel/infrastructure/notifiers.py` (webhook guard),
+`src/sentinel/interface/api/deps.py` (+`get_url_guard`, wrap probe, guard webhook),
+`src/sentinel/infrastructure/scheduler.py` (same wiring), `src/sentinel/config.py`
+(+`ssrf_guard_enabled`), `backend/.env.example` (+SSRF section), `SPEC.md` (§4 enum,
+§6 scope), the three new test files + `test_notifiers.py`.
+Follow-ups / parked: **redirect hops are not re-validated** (httpx follows redirects
+inside one send; a public URL could 302 to a private address — needs an httpx
+request event hook in `HttpxProbe`; S14 hardening). No allow-list override for
+intentionally-private monitor targets (all-or-nothing toggle). S10.2 (retention) is
+the second half of S10.
+Commit(s): `feat(security): SSRF guard — resolve-then-validate every outbound
+user-supplied URL (S10.1)`.
+Resume hint: start S10.2 — write the failing `prune_before` contract tests (prunes
+old / keeps new / second run deletes 0, ×{memory,pg}) for check-result /
+state-transition / rollup repos before the port methods, `RetentionService`, config
+knobs, and scheduler interval wiring.
 
 ### S9a — Minimal API auth gate  · 2026-07-16
 Done: The API can no longer be exposed unauthenticated (sentinel-security §4, PLAN D9).

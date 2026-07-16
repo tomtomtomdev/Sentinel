@@ -225,7 +225,8 @@ CheckResult
   response_size_bytes: int | None
   cert_expires_at: datetime | None    # HTTPS leaf cert notAfter, when captured
   success: bool
-  error: ErrorKind | None            # timeout|dns|connection|tls|assertion|unknown
+  error: ErrorKind | None            # timeout|dns|connection|tls|assertion|blocked|unknown
+                                     # `blocked` = the SSRF guard refused the URL (§6)
   assertion_results: list[AssertionResult]
 
 CheckRollup                           # hourly aggregate per monitor (§3.5, §6)
@@ -372,7 +373,11 @@ Validation → `422`; not found → `404`; transport problems in probes are resu
 - **SSRF protection.** Probes hit arbitrary user-supplied URLs. By default
   (configurable) deny requests to loopback, link-local, and private IP ranges,
   and the cloud metadata endpoint `169.254.169.254`. Resolve-then-validate to
-  avoid DNS-rebinding. May be disabled for trusted self-host use.
+  avoid DNS-rebinding. May be disabled for trusted self-host use. Applies to
+  every outbound user-supplied URL — monitor probes, auth-source logins, and
+  webhook channels. A blocked probe is a failed check with `error=blocked`; a
+  blocked login is a recorded refresh error; a blocked webhook is a
+  `NotificationLog` with `ok=false` — never a crash or a silent success.
 - **Access control.** The API must not be exposed to the internet without the
   minimal auth gate (a static API token / basic auth) in place. The gate ships
   before any deploy slice; full hardening (rate limiting, etc.) follows.

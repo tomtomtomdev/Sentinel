@@ -47,6 +47,7 @@ from sentinel.infrastructure.events import InProcessEventBus
 from sentinel.infrastructure.notifiers import EmailNotifier, TelegramNotifier, WebhookNotifier
 from sentinel.infrastructure.probe import HttpxProbe
 from sentinel.infrastructure.secrets import FernetSecretBox
+from sentinel.infrastructure.url_guard import GuardedHttpProbe, SsrfUrlGuard
 
 
 @lru_cache
@@ -105,11 +106,19 @@ def get_state_transition_repository() -> StateTransitionRepository:
 
 
 @lru_cache
+def get_url_guard() -> SsrfUrlGuard:
+    """The process-wide SSRF guard (SPEC §6) applied to every outbound
+    user-supplied URL: monitor probes, auth-source logins, webhook channels."""
+    return SsrfUrlGuard(enabled=get_settings().ssrf_guard_enabled)
+
+
+@lru_cache
 def get_notifiers() -> dict[ChannelType, Notifier]:
     """The channel-type → `Notifier` map (SPEC §3.7). One instance per process; each
-    notifier opens its own short-lived HTTP client per send. Email is a parked stub."""
+    notifier opens its own short-lived HTTP client per send. Email is a parked stub.
+    The webhook's user-supplied URL is SSRF-guarded; Telegram's host is fixed."""
     return {
-        ChannelType.WEBHOOK: WebhookNotifier(),
+        ChannelType.WEBHOOK: WebhookNotifier(guard=get_url_guard()),
         ChannelType.TELEGRAM: TelegramNotifier(),
         ChannelType.EMAIL: EmailNotifier(),
     }
@@ -143,9 +152,11 @@ def get_auth_token_service() -> AuthTokenService:
 
 @lru_cache
 def get_http_probe() -> HttpProbe:
-    """One shared probe (and its pooled `AsyncClient`) for the process. Built
-    lazily so importing the app opens no client; the event loop binds on first use."""
-    return HttpxProbe()
+    """One shared probe (and its pooled `AsyncClient`) for the process, wrapped in
+    the SSRF guard so monitor probes and auth-source logins both validate their
+    URL before sending (SPEC §6). Built lazily so importing the app opens no
+    client; the event loop binds on first use."""
+    return GuardedHttpProbe(HttpxProbe(), get_url_guard())
 
 
 @lru_cache
