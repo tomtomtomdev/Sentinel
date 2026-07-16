@@ -12,6 +12,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 from sentinel.domain.errors import NotFoundError, ValidationError
+from sentinel.interface.api.auth import UnauthorizedError
 
 
 def _envelope(code: str, message: str, details: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -29,6 +30,14 @@ def register_exception_handlers(app: FastAPI) -> None:
     @app.exception_handler(NotFoundError)
     async def _on_not_found(_request: Request, exc: NotFoundError) -> JSONResponse:
         return JSONResponse(status_code=404, content=_envelope("not_found", str(exc)))
+
+    @app.exception_handler(UnauthorizedError)
+    async def _on_unauthorized(_request: Request, exc: UnauthorizedError) -> JSONResponse:
+        return JSONResponse(
+            status_code=401,
+            content=_envelope("unauthorized", str(exc)),
+            headers={"WWW-Authenticate": "Bearer"},
+        )
 
     @app.exception_handler(RequestValidationError)
     async def _on_request_validation(

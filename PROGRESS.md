@@ -20,7 +20,19 @@
 
 ## Current state
 
-- **Phase:** **S9.3 complete — `Notifier` adapters + `AlertService` wiring. S9 is
+- **Phase:** **S9a complete — minimal API auth gate.** One `require_auth` FastAPI
+  dependency (`interface/api/auth.py`) guards **every** `/api/v1/*` router except the
+  `/health` liveness probe — reads, writes, and the SSE `/events` stream all demand
+  `Authorization: Bearer <AUTH_TOKEN>` (`AUTH_TOKEN` in `config.py`), compared with
+  `secrets.compare_digest` (constant-time). Missing/invalid → `401` in the SPEC §5
+  envelope (code `unauthorized`, `WWW-Authenticate: Bearer`) via a new
+  `UnauthorizedError` handler in `errors.py` (extends D12). Applied router-wide in
+  `create_app()` (`dependencies=[Depends(require_auth)]`), so a new router must opt
+  **in** to being open, not out of being gated. **Empty `AUTH_TOKEN` (default) =
+  gate open — dev only** (D29); `.env.example` documents "never expose without a
+  token" and S13's runbook/compose must set it. The gate reads settings via
+  `Depends(get_settings)`, so tests (and S14's richer auth) compose on the same seam.
+- **Prior phase:** **S9.3 complete — `Notifier` adapters + `AlertService` wiring. S9 is
   DONE (alert channels + notify, cooldown + flap damping end to end).** New `Notifier`
   port (`send(channel, notification) -> NotifyResult`, **never raises**) with three
   adapters in `infrastructure/notifiers.py`: `WebhookNotifier` (POST JSON),
@@ -89,11 +101,15 @@
   `MonitorState` advances via `advance_state`; §3.5 read endpoints via `StatsService`;
   hourly `CheckRollup`s back 7d/30d; `GET /events` streams `check_completed`/
   `status_changed`. S5b (auth source) + S6 (scheduler + heartbeat) complete beneath.
-- **Last green commit:** S9.2 (`feat(alerts): alert-channel + notification-log
-  persistence + channel CRUD (S9.2)`); S9.3 staged.
-- **Test suite:** `just test` (no DB) → **421 passed, 47 skipped** (+30 from S9.3;
-  +3 skips are the PG-only state-transition contract). With
-  `TEST_DATABASE_URL=…/sentinel_test` → **468 passed** (no skips). S9.3 added:
+- **Last green commit:** S9.3 (`feat(alerts): Notifier adapters + AlertService —
+  idempotent fan-out, flap history (S9.3)`); S9a staged.
+- **Test suite:** `just test` (no DB) → **434 passed, 47 skipped** (+13 from S9a).
+  With `TEST_DATABASE_URL=…/sentinel_test` → **481 passed** (no skips). S9a added:
+  `tests/integration/test_auth_gate.py` (13 — 401 envelope + `WWW-Authenticate` on
+  missing/wrong/non-Bearer credentials; valid token accepted; one route per router
+  gated incl. SSE `/events`; `/health` stays open; empty-token dev mode open).
+  Real-wire smoke: uvicorn with `AUTH_TOKEN` set → `/health` 200, `/monitors` 401
+  (no/bad token), `/events` 401. **S9.3 detail (still current):** S9.3 added:
   `tests/unit/application/test_alert_service.py` (11 — fan-out exactly-once, idempotent
   re-invoke, disabled skipped, cooldown/flap-crossing/above-flap suppression, failing
   notifier → `ok=false` + fan-out continues, unregistered type → `ok=false`, payload
@@ -123,27 +139,37 @@
   confirmed-flip history, `monitor_id` index; feeds flap damping). Prior:
   `d4a1b2c3e5f6` (`alert_channels`; `notification_logs`).
 - **Deps:** unchanged (`respx` already present; notifiers use the existing `httpx`).
-- **Config:** S9.3 added `alert_flap_threshold` (5), `alert_flap_window_seconds` (600),
-  `alert_renotify_after_seconds` (0), `dashboard_base_url` ("") — `.env.example` updated
-  with the Alerting section. `AlertPolicy` is now built from these in both composition
-  roots. (`heartbeat_url`, `scheduler_*` from S6 remain; their `.env.example` backfill
+- **Config:** S9a added `auth_token` ("" = gate open, dev only) + the `.env.example`
+  "API auth gate" section with a generation one-liner. Prior (S9.3):
+  `alert_flap_threshold` (5), `alert_flap_window_seconds` (600),
+  `alert_renotify_after_seconds` (0), `dashboard_base_url` ("") — `.env.example`
+  Alerting section; `AlertPolicy` built from these in both composition roots.
+  (`heartbeat_url`, `scheduler_*` from S6 remain; their `.env.example` backfill
   is still parked.)
 - **Deployed:** no.
 
 ## Next action
 
-➡️ **Begin S9a — Minimal API auth gate.** The API must never be internet-exposed
-unauthenticated (see **sentinel-security** §4). Add a FastAPI dependency on all
-`/api/v1/*` routes that checks a static credential (`Authorization: Bearer
-<AUTH_TOKEN>`, `AUTH_TOKEN` from `config.py`), using a **constant-time** comparison;
-missing/invalid → `401` via the standard `SPEC §5` error envelope (extend the existing
-error handling, D12). Keep it composable so S14 can layer rate limiting + real
-multi-user auth on top without a rewrite. Write failing tests first: an unauthenticated
-request → `401`; a valid token → accepted; the gate covers writes (and reads if
-configured); the `/api/v1/health` liveness probe stays open (decide + test). The
-frontend API client (S11) will send the token on every call. Note the SSE `/events`
-stream has no gate yet either — cover it here. Also decide `AUTH_TOKEN` empty-in-dev
-behaviour (open vs fail-closed) and add it to `.env.example`.
+➡️ **Begin S10 — SSRF guard + retention.** Two halves (PLAN §5; sentinel-security §3):
+**(1) SSRF guard** — one resolve-then-validate URL guard (reject non-http(s) schemes,
+then resolve the host and reject loopback / link-local incl. `169.254.169.254` /
+private / unspecified / multicast for **every** resolved IP), applied to every outbound
+user-supplied URL: the probe (monitor URLs), the auth-source login request, and the
+**webhook notifier** (parked from S9.3). Toggled by `SSRF_GUARD_ENABLED` (default
+**on**). A blocked URL yields a failed `CheckResult` / refresh error / `NotifyResult
+(ok=False)` with a clear reason — never a crash or silent success. Write failing tests
+first: each blocked range rejected, public host passes, toggle flips behaviour, and
+DNS-rebinding (public name → private IP) caught — the guard is pure-ish (inject the
+resolver). **(2) Retention** — a pruning job for raw `CheckResult`s (per SPEC §6
+retention) + `state_transitions` (parked from S9.3) and the 13-mo rollup window;
+idempotent, tested for "prunes old, keeps new, second run is a no-op". Likely a split:
+S10.1 guard, S10.2 retention.
+
+**Parked follow-ups from S9a** (not blockers): the gate is all-or-nothing global
+(no writes-only mode, no per-route scopes — S14 if ever needed); rate limiting on the
+401 path (brute-force damping) is S14; `AUTH_TOKEN` is a single shared static
+credential (multi-user auth is post-v1); S13 compose/runbook **must set `AUTH_TOKEN`**
+(empty = open, D29).
 
 **Parked follow-ups from S9.3** (not blockers): the webhook notifier trusts its
 user-supplied URL — **SSRF-guard it in S10** (resolve-then-validate, same guard as the
@@ -180,7 +206,7 @@ notifiers open a short-lived `httpx.AsyncClient` per send (no shared pooled clie
   - [x] **S9.1** Pure `should_notify` (flap damping + cooldown) + alert value objects
   - [x] **S9.2** `AlertChannel`/`NotificationLog` persistence + channel CRUD API
   - [x] **S9.3** `Notifier` adapters + `AlertService` wiring (idempotent via `NotificationLog`)
-- [ ] **S9a** Minimal API auth gate
+- [x] **S9a** Minimal API auth gate
 - [ ] **S10** SSRF guard + retention
 - [ ] **S11** Frontend scaffold
 - [ ] **S12** Frontend charts + live
@@ -203,6 +229,53 @@ notifiers open a short-lived `httpx.AsyncClient` per send (no shared pooled clie
 > Commit(s): <conventional commit subject lines>
 > Resume hint: <the very next concrete step>
 > ```
+
+### S9a — Minimal API auth gate  · 2026-07-16
+Done: The API can no longer be exposed unauthenticated (sentinel-security §4, PLAN D9).
+A single `require_auth` FastAPI dependency (`interface/api/auth.py`) demands
+`Authorization: Bearer <AUTH_TOKEN>` on **every** `/api/v1/*` route — reads, writes,
+imports, auth sources, channels, and the SSE `/events` stream — leaving only the
+`/api/v1/health` liveness probe open (deploy probes need no secret). The token compare
+is **constant-time** (`secrets.compare_digest` over encoded bytes); a missing/wrong
+credential or non-Bearer scheme raises an interface-level `UnauthorizedError` that the
+existing handler registry (D12) maps to the SPEC §5 envelope: `401`, code
+`unauthorized`, plus `WWW-Authenticate: Bearer`. Applied in `create_app()` via
+`include_router(..., dependencies=[Depends(require_auth)])` on all routers except
+`health`, so the gate short-circuits **before** any service/DB dependency resolves and
+a future router must opt **in** to being open rather than out of being gated. Both
+reads and writes are gated (no writes-only knob — the S11 client sends the token on
+every call). **Empty `AUTH_TOKEN` (the default) disables the gate** — decided **open
+in dev** over fail-closed (D29) so local dev and the DB-less suite run without
+ceremony; `.env.example` gained an "API auth gate" section (generation one-liner +
+"NEVER expose without a token"), and S13's compose/runbook must set it. The gate reads
+settings via `Depends(get_settings)` — the seam tests override per-app and S14 layers
+rate limiting / richer auth onto.
+Tests: `tests/integration/test_auth_gate.py` (13 — missing token → 401 envelope +
+`WWW-Authenticate`; wrong token / non-Bearer scheme → 401 (response never echoes the
+token); valid token → 200; parametrized one-route-per-router sweep proves monitors
+(read+write), imports, auth-sources, channels, and SSE `/events` are all gated;
+`/health` stays open with the token set; empty token = open). Suite: **434 passed /
+47 skipped** (no DB, +13); **481 passed** with PG (`sentinel_test`). ruff + mypy
+strict clean. Real-wire smoke: uvicorn booted with `AUTH_TOKEN` set → `/health` 200,
+`/monitors` 401 without/with a bad token, `/events` 401.
+Decisions: **D29** (one router-wide `require_auth` dependency, everything gated except
+`/health`; reads gated too; constant-time compare; interface-level `UnauthorizedError`
+→ 401 envelope via D12 registry; empty `AUTH_TOKEN` = dev-open, documented trade-off;
+settings via `Depends(get_settings)` as the S14 composability seam) added to PLAN §7.
+Files: `src/sentinel/interface/api/auth.py` (new — `require_auth` +
+`UnauthorizedError`), `src/sentinel/interface/api/errors.py` (+401 handler),
+`src/sentinel/interface/main.py` (gate all routers except health),
+`src/sentinel/config.py` (+`auth_token`), `backend/.env.example` (+API auth gate
+section), `tests/integration/test_auth_gate.py` (new).
+Follow-ups / parked: rate limiting on the 401 path + any per-route scopes are **S14**;
+single shared static credential (multi-user auth post-v1); **S13 must set
+`AUTH_TOKEN`** in compose/deploy (empty = open); the SSE gate check happens once at
+connect (fine for a static token — nothing to revoke mid-stream in v1).
+Commit(s): `feat(auth): minimal API auth gate — Bearer AUTH_TOKEN on all /api/v1 (S9a)`.
+Resume hint: start S10 — write the failing SSRF-guard unit tests (blocked ranges,
+public-host pass, toggle, DNS-rebinding via an injected resolver) before the guard
+module, then wire it into probe + auth refresh + webhook notifier; retention/pruning
+is the second half (consider an S10.1/S10.2 split).
 
 ### S9.3 — `Notifier` adapters + `AlertService` wiring (finishes S9)  · 2026-07-16
 Done: Alerting works **end to end** (SPEC §3.7). On a confirmed `StateTransition` the

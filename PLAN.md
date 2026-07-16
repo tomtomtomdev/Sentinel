@@ -737,6 +737,25 @@ stable (after S7), against a mock server if needed.
   deep link is built from `DASHBOARD_BASE_URL` (empty ⇒ no link). SSRF-guarding the
   user-supplied webhook URL is **S10** (the notifier currently trusts it).
 
+- **D29 — S9a auth gate: one `require_auth` dependency, router-wide, everything gated
+  except `/health`; empty `AUTH_TOKEN` = gate open (dev mode).** A single FastAPI
+  dependency (`interface/api/auth.py`) checks `Authorization: Bearer <AUTH_TOKEN>`
+  with `secrets.compare_digest` (constant-time) and raises an interface-level
+  `UnauthorizedError` mapped to the SPEC §5 envelope (`401`, code `unauthorized`,
+  `WWW-Authenticate: Bearer`) by the existing handler registry (extends D12). Applied
+  in `create_app()` via `include_router(..., dependencies=[Depends(require_auth)])`
+  on **every** router except `health` — reads and writes are both gated (no
+  writes-only knob; the S11 client sends the token on every call), the SSE `/events`
+  stream included, and a future router must opt **in** to being open rather than out
+  of being gated. Settings reach the gate via `Depends(get_settings)` so tests
+  override the token per-app. **Empty `AUTH_TOKEN` (the default) disables the gate**
+  — chosen over fail-closed so local dev and the existing DB-less suite run without
+  ceremony; the trade-off is documented in `.env.example` ("dev only; never expose
+  without a token") and the S13 runbook must set it in compose/deploy. The
+  dependency is the composability seam S14 layers rate limiting / multi-user auth
+  onto. `UnauthorizedError` lives in `interface/` (not `domain/errors.py`): a static
+  HTTP credential is a transport concern, not a domain rule.
+
 _Append new decisions here as `Dn — <decision>: <why>` when slices force a choice._
 
 ---

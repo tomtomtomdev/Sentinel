@@ -32,6 +32,10 @@ class Settings(BaseSettings):
     # Base URL of the dashboard, used to build the deep link in an alert (SPEC §3.7).
     # Empty (the default) omits the link. No trailing slash needed.
     dashboard_base_url: str = ""
+    # Static API credential (S9a): every /api/v1 route except /health requires
+    # `Authorization: Bearer <AUTH_TOKEN>`. Empty disables the gate — dev only;
+    # never expose the API without it (PLAN §6).
+    auth_token: str = ""
 
     def secret_key_ring(self) -> list[str]:
         """Parse `SECRET_KEY` into an ordered, whitespace-trimmed key ring,
