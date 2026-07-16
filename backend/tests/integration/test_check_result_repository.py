@@ -165,3 +165,25 @@ async def test_since_and_until_compose_with_limit(repo: CheckResultRepository) -
         FINISHED + timedelta(minutes=4),
         FINISHED + timedelta(minutes=3),
     ]
+
+
+async def test_prune_before_deletes_old_keeps_new_and_is_idempotent(
+    repo: CheckResultRepository,
+) -> None:
+    """S10.2 retention (SPEC §6): rows with `finished_at` strictly before the cutoff
+    go, everything at/after it stays — across ALL monitors — and a second run
+    deletes nothing."""
+    other_monitor = uuid4()
+    cutoff = FINISHED + timedelta(days=30)
+    await repo.add(sample_result(finished_at=cutoff - timedelta(seconds=1)))  # old → pruned
+    await repo.add(sample_result(monitor_id=other_monitor, finished_at=cutoff - timedelta(days=1)))
+    await repo.add(sample_result(finished_at=cutoff))  # exactly at the cutoff → kept
+    await repo.add(sample_result(finished_at=cutoff + timedelta(minutes=1)))
+
+    deleted = await repo.prune_before(cutoff)
+
+    assert deleted == 2
+    kept = await repo.list_for_monitor(MONITOR_ID, limit=None)
+    assert [r.finished_at for r in kept] == [cutoff + timedelta(minutes=1), cutoff]
+    assert await repo.list_for_monitor(other_monitor, limit=None) == []
+    assert await repo.prune_before(cutoff) == 0  # idempotent

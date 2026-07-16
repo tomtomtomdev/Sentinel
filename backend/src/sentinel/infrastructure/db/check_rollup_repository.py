@@ -9,11 +9,13 @@ from dataclasses import replace
 from datetime import datetime
 from uuid import UUID
 
+from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlmodel import col, select
 
 from sentinel.domain.entities import CheckRollup
 from sentinel.domain.ports import Clock
+from sentinel.infrastructure.db.engine import deleted_count
 from sentinel.infrastructure.db.models import CheckRollupRow
 
 
@@ -83,3 +85,13 @@ class SqlCheckRollupRepository:
             )
             result = await session.execute(stmt)
             return [_to_entity(row) for row in result.scalars().all()]
+
+    async def prune_before(self, cutoff: datetime) -> int:
+        """Delete every rollup bucket (all monitors) starting strictly before
+        `cutoff` — the ~13-month rollup window (SPEC §6 retention)."""
+        async with self._session_factory() as session:
+            result = await session.execute(
+                delete(CheckRollupRow).where(col(CheckRollupRow.bucket_start) < cutoff)
+            )
+            await session.commit()
+            return deleted_count(result)

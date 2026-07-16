@@ -32,6 +32,13 @@ class Settings(BaseSettings):
     # Base URL of the dashboard, used to build the deep link in an alert (SPEC §3.7).
     # Empty (the default) omits the link. No trailing slash needed.
     dashboard_base_url: str = ""
+    # Retention (SPEC §6): raw check results + state transitions are pruned past
+    # `retention_raw_days`; tiny hourly rollups are kept `retention_rollup_days`
+    # (~13 months) so long-range stats survive raw pruning. The worker runs the
+    # pruning pass at most once per `retention_prune_interval_seconds`.
+    retention_raw_days: int = 30
+    retention_rollup_days: int = 396
+    retention_prune_interval_seconds: float = 3600.0
     # SSRF guard (SPEC §6): outbound user-supplied URLs (monitor probes, auth-source
     # logins, webhook channels) are resolve-then-validated and refused when they hit
     # loopback/link-local/private/metadata ranges. Disable only for trusted

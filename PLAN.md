@@ -782,6 +782,27 @@ stable (after S7), against a mock server if needed.
   public URL 302→private is not re-validated per hop (needs an httpx request hook;
   S14 hardening).
 
+- **D31 — S10.2 retention: `prune_before(cutoff)` on the three history repos, a
+  `RetentionService` owning the cutoffs, scheduled by the worker at most once per
+  interval.** Each history store prunes itself: `CheckResultRepository` (by
+  `finished_at`), `StateTransitionRepository` (by `at`), `CheckRollupRepository` (by
+  `bucket_start`) gain `prune_before(cutoff) -> int` — strictly-older-than semantics
+  (a row exactly at the cutoff is kept), one bulk DELETE across **all** monitors, no
+  migration needed. `RetentionService` (`application/`) computes cutoffs from a
+  `RetentionPolicy` VO (`raw_days=30` for raw results **and** transitions — flips
+  older than the flap window have no reader; `rollup_days=396` ≈ 13 months so
+  long-range stats survive raw pruning) via the injected `Clock`; naturally
+  idempotent (age cutoff), so re-runs delete nothing. The policy VO is a plain
+  dataclass like `AlertPolicy` (`value_objects` can't import `errors` — one-way
+  invariant); the **service** constructor rejects a non-positive window with
+  `ValidationError` so a misconfigured worker fails at boot rather than silently
+  deleting everything. Scheduling lives in `SchedulerRunner` (`retention` optional
+  dep + `retention_interval_seconds`, default 3600): `_maybe_prune(now)` runs on the
+  first cycle then at most once per interval; a pruning failure is logged and
+  retried next interval, never a crashed cycle. Worker-only wiring (the API root
+  doesn't prune). SPEC's optional per-monitor row cap ("and/or") is parked —
+  age-only in v1.
+
 _Append new decisions here as `Dn — <decision>: <why>` when slices force a choice._
 
 ---

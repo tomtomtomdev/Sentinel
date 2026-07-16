@@ -8,11 +8,13 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
+from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlmodel import col, select
 
 from sentinel.domain.entities import CheckResult
 from sentinel.domain.value_objects import AssertionResult, ErrorKind
+from sentinel.infrastructure.db.engine import deleted_count
 from sentinel.infrastructure.db.models import CheckResultRow
 
 
@@ -89,3 +91,13 @@ class SqlCheckResultRepository:
             stmt = stmt.order_by(col(CheckResultRow.finished_at).desc()).limit(limit)
             result = await session.execute(stmt)
             return [_to_entity(row) for row in result.scalars().all()]
+
+    async def prune_before(self, cutoff: datetime) -> int:
+        """Delete every result (all monitors) finished strictly before `cutoff`
+        (SPEC §6 retention). One bulk DELETE; returns the row count."""
+        async with self._session_factory() as session:
+            result = await session.execute(
+                delete(CheckResultRow).where(col(CheckResultRow.finished_at) < cutoff)
+            )
+            await session.commit()
+            return deleted_count(result)

@@ -9,10 +9,12 @@ import uuid
 from datetime import datetime
 from uuid import UUID
 
+from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlmodel import col, select
 
 from sentinel.domain.value_objects import MonitorStatus, StateTransition
+from sentinel.infrastructure.db.engine import deleted_count
 from sentinel.infrastructure.db.models import StateTransitionRow
 
 
@@ -58,3 +60,13 @@ class SqlStateTransitionRepository:
             )
             result = await session.execute(stmt)
             return [_to_entity(row) for row in result.scalars().all()]
+
+    async def prune_before(self, cutoff: datetime) -> int:
+        """Delete every transition (all monitors) strictly before `cutoff` (SPEC §6
+        retention). Flips older than the flap window have no reader anyway."""
+        async with self._session_factory() as session:
+            result = await session.execute(
+                delete(StateTransitionRow).where(col(StateTransitionRow.at) < cutoff)
+            )
+            await session.commit()
+            return deleted_count(result)

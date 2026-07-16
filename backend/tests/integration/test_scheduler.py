@@ -9,6 +9,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 from sentinel.application.check_service import CheckService
+from sentinel.application.retention_service import RetentionReport
 from sentinel.domain.entities import CheckResult, Monitor
 from sentinel.domain.value_objects import ProbeResponse
 from sentinel.infrastructure.scheduler import SchedulerRunner
@@ -175,3 +176,68 @@ async def test_one_failing_check_does_not_abort_the_cycle() -> None:
     assert len(await h.results.list_for_monitor(survivor.id)) == 1  # ...one still recorded
     assert await h.results.list_for_monitor(boom.id) == []  # the failure recorded nothing
     assert h.heartbeat.pings == 1  # cycle completed despite the failure
+
+
+class CountingRetention:
+    """A `RetentionService` stand-in that counts prune runs (optionally raising)."""
+
+    def __init__(self, *, raises: bool = False) -> None:
+        self.runs = 0
+        self._raises = raises
+
+    async def prune(self) -> RetentionReport:
+        self.runs += 1
+        if self._raises:
+            raise RuntimeError("db unavailable")
+        return RetentionReport(results_deleted=0, transitions_deleted=0, rollups_deleted=0)
+
+
+def _runner_with_retention(h: Harness, retention: CountingRetention) -> SchedulerRunner:
+    return SchedulerRunner(
+        monitors=h.monitors,
+        checks=h.checks,
+        results=h.results,
+        clock=h.clock,
+        heartbeat=h.heartbeat,
+        retention=retention,  # type: ignore[arg-type]
+        retention_interval_seconds=3600,
+    )
+
+
+async def test_retention_prunes_on_the_first_cycle_then_waits_for_the_interval() -> None:
+    """S10.2 (SPEC §6): pruning is scheduled — it runs at most once per interval,
+    not every poll cycle, and the first cycle primes it."""
+    h = Harness()
+    retention = CountingRetention()
+    runner = _runner_with_retention(h, retention)
+
+    await runner.run_cycle()
+    await runner.run_cycle()  # same instant — inside the interval
+    assert retention.runs == 1
+
+    h.clock.set(NOW + timedelta(seconds=3600))  # interval elapsed
+    await runner.run_cycle()
+    assert retention.runs == 2
+
+
+async def test_retention_failure_does_not_abort_the_cycle() -> None:
+    h = Harness()
+    await h.add_monitor()
+    h.ok()
+    runner = _runner_with_retention(h, CountingRetention(raises=True))
+
+    probed = await runner.run_cycle()
+
+    assert probed == 1  # the cycle still probed…
+    assert h.heartbeat.pings == 1  # …and completed
+
+
+async def test_runner_without_retention_still_cycles() -> None:
+    h = Harness()
+    await h.add_monitor()
+    h.ok()
+
+    probed = await h.runner.run_cycle()
+
+    assert probed == 1
+    assert h.heartbeat.pings == 1

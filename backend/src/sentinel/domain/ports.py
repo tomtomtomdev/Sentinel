@@ -65,6 +65,8 @@ class CheckResultRepository(Protocol):
         limit: int | None = 100,
     ) -> list[CheckResult]: ...
 
+    async def prune_before(self, cutoff: datetime) -> int: ...
+
 
 class CheckRollupRepository(Protocol):
     """Persistence boundary for hourly `CheckRollup`s (SPEC §3.5, §4, §6). `save` is
@@ -81,6 +83,8 @@ class CheckRollupRepository(Protocol):
     async def list_for_window(
         self, monitor_id: UUID, *, since: datetime, until: datetime
     ) -> list[CheckRollup]: ...
+
+    async def prune_before(self, cutoff: datetime) -> int: ...
 
 
 class MonitorStateRepository(Protocol):
@@ -165,6 +169,8 @@ class StateTransitionRepository(Protocol):
     async def add(self, transition: StateTransition) -> StateTransition: ...
 
     async def list_since(self, monitor_id: UUID, *, since: datetime) -> list[StateTransition]: ...
+
+    async def prune_before(self, cutoff: datetime) -> int: ...
 
 
 class Notifier(Protocol):

@@ -20,7 +20,19 @@
 
 ## Current state
 
-- **Phase:** **S10.1 complete — SSRF guard on every outbound user-supplied URL.**
+- **Phase:** **S10 complete (S10.2 — retention pruning).** History now prunes itself
+  (SPEC §6, D31): `prune_before(cutoff) -> int` on `CheckResultRepository`
+  (`finished_at`), `StateTransitionRepository` (`at`), `CheckRollupRepository`
+  (`bucket_start`) — strictly-older-than, bulk DELETE across all monitors, port +
+  fakes + SQL adapters, no migration. `RetentionService` (`application/`) computes
+  cutoffs from `RetentionPolicy` (raw **30d** for results + transitions; rollups
+  **396d** ≈ 13mo) via the injected `Clock`; idempotent by construction; the service
+  constructor rejects a non-positive window (`ValidationError`, fail-at-boot).
+  `SchedulerRunner` runs it via `_maybe_prune`: first cycle, then at most once per
+  `RETENTION_PRUNE_INTERVAL_SECONDS` (3600); a prune failure is logged + retried next
+  interval, never a crashed cycle. Worker-only wiring (`build_runner`); config knobs +
+  `.env.example` section. Per-monitor row cap parked (SPEC "and/or" — age-only v1).
+- **Prior phase:** **S10.1 complete — SSRF guard on every outbound user-supplied URL.**
   Resolve-then-validate (D30): pure `invalid_url_reason` + `blocked_ip_reason` in
   `domain/logic/url_guard.py` (non-http(s)/host-less URLs; loopback, link-local incl.
   `169.254.169.254`, private, unspecified, multicast, reserved; IPv4-mapped v6
@@ -117,10 +129,18 @@
   `MonitorState` advances via `advance_state`; §3.5 read endpoints via `StatsService`;
   hourly `CheckRollup`s back 7d/30d; `GET /events` streams `check_completed`/
   `status_changed`. S5b (auth source) + S6 (scheduler + heartbeat) complete beneath.
-- **Last green commit:** S9a (`feat(auth): minimal API auth gate — Bearer AUTH_TOKEN
-  on all /api/v1 (S9a)`); S10.1 staged.
-- **Test suite:** `just test` (no DB) → **483 passed, 47 skipped** (+49 from S10.1).
-  With `TEST_DATABASE_URL=…/sentinel_test` → **530 passed** (no skips). S10.1 added:
+- **Last green commit:** S10.1 (`feat(security): SSRF guard — resolve-then-validate
+  every outbound user-supplied URL (S10.1)`); S10.2 staged.
+- **Test suite:** `just test` (no DB) → **495 passed, 50 skipped** (+12 from S10.2).
+  With `TEST_DATABASE_URL=…/sentinel_test` → **545 passed** (no skips). S10.2 added:
+  `tests/unit/application/test_retention_service.py` (6 — per-store cutoffs + report
+  counts, second-run no-op, custom policy honoured, non-positive window rejected
+  [parametrized ×3]), one `prune_before` contract test in each of the three repo
+  contract files (prunes old / keeps exactly-at-cutoff / cross-monitor / second run
+  0, ×{memory,pg}), and 3 scheduler tests (first cycle primes then waits the
+  interval; a raising retention service doesn't abort the cycle; no-retention runner
+  still cycles). Worker root smoke: `build_runner` constructs with retention wired.
+  **S10.1 detail (still current):** added:
   `tests/unit/domain/test_url_guard.py` (32 collected — scheme/host rejection incl.
   no-URL-echo, every blocked range with a named reason + no-IP-echo, IPv4-mapped v6,
   public passes incl. the 172.32.0.1 boundary, unparseable-IP fail-closed),
@@ -181,18 +201,19 @@
 
 ## Next action
 
-➡️ **Begin S10.2 — retention pruning (finishes S10).** A pruning job (SPEC §6
-retention): raw `CheckResult`s pruned by age (default **30 days**),
-`state_transitions` pruned with the same cutoff (parked from S9.3), and
-`check_rollups` pruned at **13 months** (parked from S7a). Add `prune_before(cutoff)
--> int` to the three repos (port + in-memory fake + SQL adapter — plain deletes, no
-migration), a `RetentionService` (`application/`) that computes cutoffs from config
-(`RETENTION_RAW_DAYS=30`, `RETENTION_ROLLUP_DAYS=396`) via the injected `Clock`, and
-scheduler wiring that runs it at most once per `RETENTION_PRUNE_INTERVAL_SECONDS`
-(default 3600). Write failing tests first: each repo prunes old / keeps new / second
-run deletes 0 (idempotent), ×{memory,pg}; the service applies the right cutoff per
-store; the runner triggers on the interval, not every cycle. SPEC's per-monitor row
-cap is optional ("and/or") — age-only, park the cap.
+➡️ **Begin S11 — frontend scaffold** (PLAN §5): Vite SPA, API client (sends the S9a
+Bearer token on every call), dashboard list with status + 24h uptime, monitor detail
+shell, create form, import UI, auth-source manage UI. **Design source-of-truth:
+`docs/design/`** (hi-fi handoff — dashboard + add-monitor screens, tokens, copy,
+parser specs); component tests via `pnpm test`. The backend API contract has been
+stable since S7 (stats/results/summary) + S9.2 (channels) + S9a (auth). Backend
+alternative if the frontend is deferred: S13 containerize (compose must set
+`AUTH_TOKEN` + `SECRET_KEY`, run migrations, and start web + worker).
+
+**Parked follow-ups from S10.2** (not blockers): per-monitor raw **row cap** (SPEC
+"and/or" — age-only shipped); pruning runs only in the **worker** (an API-only
+deploy never prunes); no `VACUUM`/table-bloat management (Postgres autovacuum is
+assumed); `RetentionReport` is logged, not exposed via any endpoint.
 
 **Parked follow-ups from S10.1** (not blockers): httpx follows redirects *within* one
 send, so a public URL that 302s to a private address is not re-validated per hop —
@@ -241,9 +262,9 @@ notifiers open a short-lived `httpx.AsyncClient` per send (no shared pooled clie
   - [x] **S9.2** `AlertChannel`/`NotificationLog` persistence + channel CRUD API
   - [x] **S9.3** `Notifier` adapters + `AlertService` wiring (idempotent via `NotificationLog`)
 - [x] **S9a** Minimal API auth gate
-- [ ] **S10** SSRF guard + retention _(split — S10.1 guard / S10.2 retention)_
+- [x] **S10** SSRF guard + retention _(split — S10.1 guard / S10.2 retention)_
   - [x] **S10.1** SSRF guard (probe + auth-source login + webhook notifier)
-  - [ ] **S10.2** Retention pruning (raw results + state transitions + rollups)
+  - [x] **S10.2** Retention pruning (raw results + state transitions + rollups)
 - [ ] **S11** Frontend scaffold
 - [ ] **S12** Frontend charts + live
 - [ ] **S13** Containerize & deploy
@@ -265,6 +286,64 @@ notifiers open a short-lived `httpx.AsyncClient` per send (no shared pooled clie
 > Commit(s): <conventional commit subject lines>
 > Resume hint: <the very next concrete step>
 > ```
+
+### S10.2 — Retention pruning (finishes S10)  · 2026-07-16
+Done: History is pruned on a schedule (SPEC §6 retention). The three history repos —
+`CheckResultRepository` (keyed on `finished_at`), `StateTransitionRepository` (`at`;
+parked from S9.3), `CheckRollupRepository` (`bucket_start`; parked from S7a) — each
+gained `prune_before(cutoff) -> int`: one bulk DELETE of rows **strictly older** than
+the cutoff (a row exactly at the cutoff is kept), across **all** monitors, returning
+the count; port + in-memory fakes + SQL adapters (a shared `deleted_count` helper in
+`db/engine.py` narrows SQLAlchemy's `Result` → `CursorResult.rowcount` once); no
+migration (deletes only). `RetentionService` (`application/retention_service.py`)
+computes the cutoffs from a new `RetentionPolicy` VO via the injected `Clock`: raw
+`CheckResult`s **and** `state_transitions` at `raw_days` (default **30** — flips
+older than the flap window have no reader), rollups at `rollup_days` (default
+**396** ≈ 13 months) so long-range stats survive raw pruning; returns a
+`RetentionReport` (per-store delete counts) for the worker log. Idempotent by
+construction (an age cutoff re-run deletes nothing). The policy VO is a plain
+dataclass like `AlertPolicy` (`value_objects` keeps its no-`errors`-import
+invariant); the **service constructor** rejects a non-positive window with
+`ValidationError`, so a misconfigured worker fails at boot instead of silently
+deleting everything. Scheduling lives in `SchedulerRunner`: optional `retention` dep
++ `retention_interval_seconds` (default 3600); `_maybe_prune(now)` runs on the first
+cycle, then at most once per interval, and a pruning failure (DB blip) is logged and
+retried next interval — never a crashed cycle. Wired in the **worker only**
+(`build_runner`; the API root doesn't prune). Config: `RETENTION_RAW_DAYS=30`,
+`RETENTION_ROLLUP_DAYS=396`, `RETENTION_PRUNE_INTERVAL_SECONDS=3600` +
+`.env.example` Retention section.
+Tests: `tests/unit/application/test_retention_service.py` (6),
+`prune_before` contract tests appended to `test_check_result_repository.py` /
+`test_state_transition_repository.py` / `test_check_rollup_repository.py`
+(×{memory,pg} each — prunes old, keeps exactly-at-cutoff + newer, cross-monitor,
+second run 0), scheduler tests in `test_scheduler.py` (3 — first-cycle prime + wait
+interval + re-prune after it elapses via `FixedClock.set`; raising retention doesn't
+abort the cycle; runner without retention cycles). Suite: **495 passed / 50 skipped**
+(no DB, +12); **545 passed** with PG (`sentinel_test` — SQL DELETEs verified real).
+ruff + mypy strict clean. App boots (`/api/v1/health` 200); `build_runner` smoke
+shows retention wired.
+Decisions: **D31** (per-repo `prune_before` strictly-older-than; `RetentionService`
+owns cutoffs, one raw window for results + transitions, 13-mo rollup window;
+plain-VO policy + fail-at-boot validation in the service; `_maybe_prune` interval
+scheduling in the runner, log-and-retry on failure; worker-only wiring; row cap
+parked) added to PLAN §7.
+Files: `src/sentinel/domain/value_objects.py` (+`RetentionPolicy`),
+`src/sentinel/domain/ports.py` (+`prune_before` ×3),
+`src/sentinel/application/retention_service.py` (new — service + `RetentionReport`),
+`src/sentinel/infrastructure/db/{check_result,state_transition,check_rollup}_repository.py`
+(+`prune_before`), `src/sentinel/infrastructure/db/engine.py` (+`deleted_count`),
+`src/sentinel/infrastructure/scheduler.py` (+retention dep + `_maybe_prune` +
+wiring), `src/sentinel/config.py` (+3 knobs), `backend/.env.example` (+Retention),
+`tests/support/fakes.py` (+`prune_before` ×3), the new unit test file + additions to
+the three contract files and `test_scheduler.py`.
+Follow-ups / parked: per-monitor raw **row cap** (SPEC "and/or"); pruning runs only
+in the worker process; no bloat management beyond autovacuum; `RetentionReport` has
+no API surface (log only).
+Commit(s): `feat(retention): prune raw results, transitions, and rollups on a worker
+interval (S10.2)`.
+Resume hint: start S11 (frontend scaffold, design source `docs/design/`) — or S13
+(containerize) if the frontend is deferred; the backend feature set through S10 is
+complete and green.
 
 ### S10.1 — SSRF guard on outbound user-supplied URLs  · 2026-07-16
 Done: Every outbound user-supplied URL is now resolve-then-validated before anything

@@ -81,3 +81,23 @@ async def test_list_since_boundary_is_inclusive(repo: StateTransitionRepository)
 
     assert len(await repo.list_since(monitor_id, since=T0)) == 1
     assert len(await repo.list_since(monitor_id, since=T0 + timedelta(seconds=1))) == 0
+
+
+async def test_prune_before_deletes_old_keeps_new_and_is_idempotent(
+    repo: StateTransitionRepository,
+) -> None:
+    """S10.2 retention (SPEC §6): flips with `at` strictly before the cutoff go,
+    at/after stays, across all monitors; a second run deletes nothing."""
+    mine, theirs = uuid4(), uuid4()
+    await repo.add(_transition(mine, MonitorStatus.DOWN, T0 - timedelta(days=31)))
+    await repo.add(_transition(theirs, MonitorStatus.DOWN, T0 - timedelta(days=40)))
+    await repo.add(_transition(mine, MonitorStatus.UP, T0))  # exactly at the cutoff → kept
+    await repo.add(_transition(mine, MonitorStatus.DOWN, T0 + timedelta(minutes=5)))
+
+    deleted = await repo.prune_before(T0)
+
+    assert deleted == 2
+    kept = await repo.list_since(mine, since=T0 - timedelta(days=365))
+    assert [t.at for t in kept] == [T0, T0 + timedelta(minutes=5)]
+    assert await repo.list_since(theirs, since=T0 - timedelta(days=365)) == []
+    assert await repo.prune_before(T0) == 0  # idempotent

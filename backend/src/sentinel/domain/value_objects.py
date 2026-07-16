@@ -212,6 +212,18 @@ class AlertPolicy:
 
 
 @dataclass(frozen=True)
+class RetentionPolicy:
+    """How long history is kept (SPEC §6 retention). Raw `CheckResult`s and the
+    `state_transitions` flap history are pruned at `raw_days`; hourly rollups are
+    tiny and kept far longer (`rollup_days`, default ≈ 13 months) so long-range
+    stats survive raw pruning. Windows must be positive — `RetentionService`
+    refuses a policy that would delete everything."""
+
+    raw_days: int = 30
+    rollup_days: int = 396
+
+
+@dataclass(frozen=True)
 class NotifyDecision:
     """The outcome of `should_notify` (SPEC §3.7). `notify` is the go/no-go; `kind`
     says which message to send (`transition` vs a `flapping` summary) or why it was

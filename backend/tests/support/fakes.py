@@ -112,6 +112,11 @@ class InMemoryCheckResultRepository:
         matches.sort(key=lambda r: r.finished_at, reverse=True)
         return [copy.deepcopy(r) for r in matches[:limit]]
 
+    async def prune_before(self, cutoff: datetime) -> int:
+        before = len(self._store)
+        self._store = [r for r in self._store if r.finished_at >= cutoff]
+        return before - len(self._store)
+
 
 class InMemoryMonitorStateRepository:
     """`MonitorStateRepository` backed by a dict — one `MonitorState` per monitor.
@@ -157,6 +162,12 @@ class InMemoryCheckRollupRepository:
         ]
         matches.sort(key=lambda r: r.bucket_start)
         return [copy.deepcopy(r) for r in matches]
+
+    async def prune_before(self, cutoff: datetime) -> int:
+        stale = [key for key in self._store if key[1] < cutoff]
+        for key in stale:
+            del self._store[key]
+        return len(stale)
 
 
 class InMemoryAuthSourceRepository:
@@ -289,6 +300,11 @@ class InMemoryStateTransitionRepository:
         matches = [t for t in self._store if t.monitor_id == monitor_id and t.at >= since]
         matches.sort(key=lambda t: t.at)
         return list(matches)
+
+    async def prune_before(self, cutoff: datetime) -> int:
+        before = len(self._store)
+        self._store = [t for t in self._store if t.at >= cutoff]
+        return before - len(self._store)
 
 
 class FakeNotifier:

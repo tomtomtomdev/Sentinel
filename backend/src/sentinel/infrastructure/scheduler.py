@@ -25,12 +25,13 @@ import asyncio
 import contextlib
 import logging
 import signal
-from datetime import datetime
+from datetime import datetime, timedelta
 from uuid import UUID
 
 from sentinel.application.alert_service import AlertService
 from sentinel.application.auth_token_service import AuthTokenService
 from sentinel.application.check_service import CheckService
+from sentinel.application.retention_service import RetentionService
 from sentinel.config import Settings, get_settings
 from sentinel.domain.logic.scheduling import select_due_monitors
 from sentinel.domain.ports import (
@@ -39,7 +40,7 @@ from sentinel.domain.ports import (
     Heartbeat,
     MonitorRepository,
 )
-from sentinel.domain.value_objects import AlertPolicy, ChannelType
+from sentinel.domain.value_objects import AlertPolicy, ChannelType, RetentionPolicy
 from sentinel.infrastructure.clock import SystemClock
 from sentinel.infrastructure.db.alert_channel_repository import (
     SqlAlertChannelRepository,
@@ -63,6 +64,7 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_POLL_SECONDS = 5.0
 DEFAULT_MAX_CONCURRENCY = 50
+DEFAULT_RETENTION_INTERVAL_SECONDS = 3600.0
 
 
 class SchedulerRunner:
@@ -76,6 +78,8 @@ class SchedulerRunner:
         heartbeat: Heartbeat,
         max_concurrency: int = DEFAULT_MAX_CONCURRENCY,
         poll_seconds: float = DEFAULT_POLL_SECONDS,
+        retention: RetentionService | None = None,
+        retention_interval_seconds: float = DEFAULT_RETENTION_INTERVAL_SECONDS,
     ) -> None:
         self._monitors = monitors
         self._checks = checks
@@ -84,6 +88,9 @@ class SchedulerRunner:
         self._heartbeat = heartbeat
         self._max_concurrency = max_concurrency
         self._poll_seconds = poll_seconds
+        self._retention = retention
+        self._retention_interval = timedelta(seconds=retention_interval_seconds)
+        self._last_prune: datetime | None = None
         self._last_run: dict[UUID, datetime] = {}
 
     async def seed_schedule(self) -> None:
@@ -104,8 +111,31 @@ class SchedulerRunner:
         if due:
             semaphore = asyncio.Semaphore(self._max_concurrency)
             await asyncio.gather(*(self._probe_one(m.id, semaphore) for m in due))
+        await self._maybe_prune(now)
         await self._heartbeat.ping()
         return len(due)
+
+    async def _maybe_prune(self, now: datetime) -> None:
+        """Run retention pruning at most once per interval (SPEC §6: idempotent
+        and scheduled) — cheap no-op on every other cycle. A pruning failure
+        (e.g. a DB blip) is logged and retried next interval, never a crashed
+        cycle."""
+        if self._retention is None:
+            return
+        if self._last_prune is not None and now - self._last_prune < self._retention_interval:
+            return
+        self._last_prune = now
+        try:
+            report = await self._retention.prune()
+        except Exception:
+            logger.exception("retention pruning failed; retrying next interval")
+            return
+        logger.info(
+            "retention pruned %s results, %s transitions, %s rollups",
+            report.results_deleted,
+            report.transitions_deleted,
+            report.rollups_deleted,
+        )
 
     async def run_forever(self, *, stop: asyncio.Event | None = None) -> None:
         """Seed, then loop `run_cycle` every `poll_seconds` until `stop` is set."""
@@ -185,6 +215,16 @@ def build_runner(settings: Settings) -> SchedulerRunner:
         auth_sources=sources,
         auth=auth,
     )
+    retention = RetentionService(
+        results=results,
+        transitions=SqlStateTransitionRepository(factory),
+        rollups=rollups,
+        clock=clock,
+        policy=RetentionPolicy(
+            raw_days=settings.retention_raw_days,
+            rollup_days=settings.retention_rollup_days,
+        ),
+    )
     return SchedulerRunner(
         monitors=monitors,
         checks=checks,
@@ -193,6 +233,8 @@ def build_runner(settings: Settings) -> SchedulerRunner:
         heartbeat=build_heartbeat(settings),
         max_concurrency=settings.scheduler_max_concurrency,
         poll_seconds=settings.scheduler_poll_seconds,
+        retention=retention,
+        retention_interval_seconds=settings.retention_prune_interval_seconds,
     )
 
 

@@ -120,3 +120,25 @@ async def test_list_for_window_scopes_to_the_monitor(repo: CheckRollupRepository
         other.monitor_id, since=BUCKET - timedelta(hours=1), until=BUCKET + timedelta(hours=1)
     )
     assert [r.monitor_id for r in window] == [other.monitor_id]
+
+
+async def test_prune_before_deletes_old_buckets_keeps_new_and_is_idempotent(
+    repo: CheckRollupRepository,
+) -> None:
+    """S10.2 retention (SPEC §6): rollups with `bucket_start` strictly before the
+    cutoff go, at/after stays, across all monitors; a second run deletes nothing."""
+    other_monitor = uuid4()
+    await repo.save(sample_rollup(bucket_start=BUCKET - timedelta(days=400)))
+    old_bucket = BUCKET - timedelta(days=397)
+    await repo.save(sample_rollup(monitor_id=other_monitor, bucket_start=old_bucket))
+    await repo.save(sample_rollup(bucket_start=BUCKET))  # exactly at the cutoff → kept
+    await repo.save(sample_rollup(bucket_start=BUCKET + timedelta(hours=1)))
+
+    deleted = await repo.prune_before(BUCKET)
+
+    assert deleted == 2
+    kept = await repo.list_for_window(
+        MONITOR_ID, since=BUCKET - timedelta(days=500), until=BUCKET + timedelta(days=1)
+    )
+    assert [r.bucket_start for r in kept] == [BUCKET, BUCKET + timedelta(hours=1)]
+    assert await repo.prune_before(BUCKET) == 0  # idempotent
