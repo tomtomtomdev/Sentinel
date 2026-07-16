@@ -699,6 +699,44 @@ stable (after S7), against a mock server if needed.
   validation (webhook `url`, telegram `bot_token`+`chat_id`, email SMTP) is deferred to
   S9.3's notifier — the entity enforces only a non-blank name in v1.
 
+- **D28 — S9.3 completes S9: `Notifier` adapters + `AlertService`; flap history from a
+  dedicated persisted `state_transitions` store owned by `AlertService`.** The `Notifier`
+  port (`send(channel, notification) -> NotifyResult`, **never raises**) has a webhook
+  (POST JSON), telegram (bot `sendMessage`), and a **parked email stub** adapter
+  (`infrastructure/notifiers.py`); SMTP is deferred, an email channel records a clear
+  `ok=False`. `AlertService` (`application/alert_service.py`) consumes the confirmed
+  `StateTransition` **directly** (not via the S8 `EventBus`), runs pure `should_notify`,
+  and on notify fans out to all **enabled** channels **exactly once** — skipping any
+  channel where `NotificationLogRepository.exists(channel_id, monitor_id, transition_at)`
+  — sending via the notifier keyed by `channel.type` and recording a `NotificationLog`
+  per attempt (`ok`/`detail`). Wired as a **4th optional `CheckService` dep** (`alerts`,
+  mirroring `states`/`rollups`/`events`, D20/D24/D25) via a `maybe_notify(monitor,
+  transition|None, last_error)` that no-ops on a `None` transition, so the manual path +
+  every call site stay green; wired in `deps.py` + the scheduler `build_runner`.
+  **Resolved the S9.2 open question — `recent_transitions` provenance = a dedicated,
+  persisted `state_transitions` store** (option a): a new `StateTransitionRepository`
+  port (`add` / `list_since(monitor_id, since)`), in-memory fake, `SqlStateTransition
+  Repository` + `state_transitions` table (surrogate `id`; the `StateTransition` VO
+  carries none; no secrets → no `SecretBox`) + migration `e7f8a9b0c1d2`. `AlertService`
+  **owns** it: it reads the prior flips inside the flap window *before* appending the
+  current flip (so the current one isn't double-counted) and appends **regardless of the
+  notify decision**, so suppressed transitions still count toward future flap windows —
+  which a `NotificationLog` (fired-only) can never provide, and which reconstructing from
+  `CheckResult`s would duplicate the whole state machine to derive. It is naturally
+  replay-safe: `CheckService` only invokes alerting when `advance_state` **confirms** a
+  flip, and a replayed check yields no transition, so `on_transition` fires once per real
+  flip. Two new value objects: `AlertNotification` (secret-free payload — monitor name,
+  new status, `since`, last error, deep link, plus `kind` for transition-vs-flapping
+  wording) and `NotifyResult` (`ok` + a **secret-free** `detail`). A pure
+  `format_alert_message` renders the telegram/email text; the webhook sends the structured
+  fields as JSON. **Secrets:** channel `config` reaches the notifier already decrypted
+  (repo concern) and is used only to send; a `NotifyResult.detail` is a classification
+  (`"HTTP 500"`, the exception class name) **never** the webhook URL or bot token (which
+  can themselves be secrets, SPEC §6). `AlertPolicy` is built from **global config**
+  (`ALERT_FLAP_THRESHOLD`/`ALERT_FLAP_WINDOW_SECONDS`/`ALERT_RENOTIFY_AFTER_SECONDS`); the
+  deep link is built from `DASHBOARD_BASE_URL` (empty ⇒ no link). SSRF-guarding the
+  user-supplied webhook URL is **S10** (the notifier currently trusts it).
+
 _Append new decisions here as `Dn — <decision>: <why>` when slices force a choice._
 
 ---

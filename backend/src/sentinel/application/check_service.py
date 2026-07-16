@@ -16,6 +16,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from uuid import UUID
 
+from sentinel.application.alert_service import AlertService
 from sentinel.application.auth_token_service import AuthTokenService
 from sentinel.domain.entities import AuthSource, CheckResult, Monitor
 from sentinel.domain.errors import NotFoundError, ProbeError
@@ -54,6 +55,7 @@ class CheckService:
         states: MonitorStateRepository | None = None,
         rollups: CheckRollupRepository | None = None,
         events: EventBus | None = None,
+        alerts: AlertService | None = None,
         auth_sources: AuthSourceRepository | None = None,
         auth: AuthTokenService | None = None,
     ) -> None:
@@ -64,6 +66,7 @@ class CheckService:
         self._states = states
         self._rollups = rollups
         self._events = events
+        self._alerts = alerts
         self._auth_sources = auth_sources
         self._auth = auth
 
@@ -76,6 +79,7 @@ class CheckService:
         transition = await self._advance_state(monitor, result)
         await self._advance_rollup(monitor, result)
         await self._publish_events(result, transition)
+        await self._maybe_alert(monitor, result, transition)
         return result
 
     async def _probe_and_record(self, monitor: Monitor) -> CheckResult:
@@ -148,6 +152,17 @@ class CheckService:
         )
         if transition is not None:
             await self._events.publish(transition)
+
+    async def _maybe_alert(
+        self, monitor: Monitor, result: CheckResult, transition: StateTransition | None
+    ) -> None:
+        """Turn a confirmed transition into alerts (SPEC §3.7). No-op when no alert
+        service is wired (e.g. the manual-check path) or when the check confirmed no
+        transition; the `AlertService` runs `should_notify` and fans out to enabled
+        channels. `result.error` is passed as the last error for the payload."""
+        if self._alerts is None:
+            return
+        await self._alerts.maybe_notify(monitor, transition, last_error=result.error)
 
     async def _advance_rollup(self, monitor: Monitor, result: CheckResult) -> None:
         """Recompute the result's hour-bucket `CheckRollup` from raw and upsert it

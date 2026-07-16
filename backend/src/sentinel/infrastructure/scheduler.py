@@ -28,6 +28,7 @@ import signal
 from datetime import datetime
 from uuid import UUID
 
+from sentinel.application.alert_service import AlertService
 from sentinel.application.auth_token_service import AuthTokenService
 from sentinel.application.check_service import CheckService
 from sentinel.config import Settings, get_settings
@@ -38,15 +39,22 @@ from sentinel.domain.ports import (
     Heartbeat,
     MonitorRepository,
 )
+from sentinel.domain.value_objects import AlertPolicy, ChannelType
 from sentinel.infrastructure.clock import SystemClock
+from sentinel.infrastructure.db.alert_channel_repository import (
+    SqlAlertChannelRepository,
+    SqlNotificationLogRepository,
+)
 from sentinel.infrastructure.db.auth_source_repository import SqlAuthSourceRepository
 from sentinel.infrastructure.db.check_result_repository import SqlCheckResultRepository
 from sentinel.infrastructure.db.check_rollup_repository import SqlCheckRollupRepository
 from sentinel.infrastructure.db.engine import create_engine, create_session_factory
 from sentinel.infrastructure.db.monitor_repository import SqlMonitorRepository
 from sentinel.infrastructure.db.monitor_state_repository import SqlMonitorStateRepository
+from sentinel.infrastructure.db.state_transition_repository import SqlStateTransitionRepository
 from sentinel.infrastructure.db.token_store import SqlTokenStore
 from sentinel.infrastructure.heartbeat import HttpxHeartbeat, NullHeartbeat
+from sentinel.infrastructure.notifiers import EmailNotifier, TelegramNotifier, WebhookNotifier
 from sentinel.infrastructure.probe import HttpxProbe
 from sentinel.infrastructure.secrets import FernetSecretBox
 
@@ -147,6 +155,23 @@ def build_runner(settings: Settings) -> SchedulerRunner:
     tokens = SqlTokenStore(factory, secret_box=secret_box)
     probe = HttpxProbe()
     auth = AuthTokenService(sources=sources, tokens=tokens, probe=probe, clock=clock)
+    alerts = AlertService(
+        channels=SqlAlertChannelRepository(factory, secret_box=secret_box),
+        notifications=SqlNotificationLogRepository(factory),
+        transitions=SqlStateTransitionRepository(factory),
+        notifiers={
+            ChannelType.WEBHOOK: WebhookNotifier(),
+            ChannelType.TELEGRAM: TelegramNotifier(),
+            ChannelType.EMAIL: EmailNotifier(),
+        },
+        clock=clock,
+        policy=AlertPolicy(
+            flap_threshold=settings.alert_flap_threshold,
+            flap_window_seconds=settings.alert_flap_window_seconds,
+            renotify_after_seconds=settings.alert_renotify_after_seconds,
+        ),
+        deep_link_base=settings.dashboard_base_url,
+    )
     checks = CheckService(
         monitors=monitors,
         results=results,
@@ -154,6 +179,7 @@ def build_runner(settings: Settings) -> SchedulerRunner:
         clock=clock,
         states=states,
         rollups=rollups,
+        alerts=alerts,
         auth_sources=sources,
         auth=auth,
     )

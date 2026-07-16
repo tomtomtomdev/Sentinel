@@ -22,6 +22,16 @@ class Settings(BaseSettings):
     # one hung endpoint can't starve the rest (SPEC §3.3).
     scheduler_poll_seconds: float = 5.0
     scheduler_max_concurrency: int = 50
+    # Alerting policy (SPEC §3.7). System-wide tunables for the pure `should_notify`
+    # decision (per-monitor overrides are parked). `flap_threshold` transitions within
+    # `flap_window_seconds` trip a single flapping summary; `flap_threshold < 2`
+    # disables damping. `renotify_after_seconds` (0 = off) rate-limits a repeat alert.
+    alert_flap_threshold: int = 5
+    alert_flap_window_seconds: int = 600
+    alert_renotify_after_seconds: int = 0
+    # Base URL of the dashboard, used to build the deep link in an alert (SPEC §3.7).
+    # Empty (the default) omits the link. No trailing slash needed.
+    dashboard_base_url: str = ""
 
     def secret_key_ring(self) -> list[str]:
         """Parse `SECRET_KEY` into an ordered, whitespace-trimmed key ring,

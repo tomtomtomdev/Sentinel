@@ -16,7 +16,14 @@ from sentinel.domain.entities import (
     NotificationLog,
     TokenState,
 )
-from sentinel.domain.value_objects import Event, ProbeRequest, ProbeResponse
+from sentinel.domain.value_objects import (
+    AlertNotification,
+    Event,
+    NotifyResult,
+    ProbeRequest,
+    ProbeResponse,
+    StateTransition,
+)
 
 
 class Clock(Protocol):
@@ -145,6 +152,33 @@ class NotificationLogRepository(Protocol):
     async def list_for_monitor(
         self, monitor_id: UUID, *, limit: int | None = 100
     ) -> list[NotificationLog]: ...
+
+
+class StateTransitionRepository(Protocol):
+    """Append-only history of confirmed up↔down transitions (SPEC §3.8), the source
+    of `recent_transitions` for flap damping (SPEC §3.7). Unlike `NotificationLog`
+    (which records only *fired* alerts), this records **every** confirmed flip —
+    including ones whose alert was suppressed — so the flap window is accurate.
+    `add` appends the just-confirmed transition; `list_since` returns a monitor's
+    transitions with `at >= since` (the flap window), oldest-first."""
+
+    async def add(self, transition: StateTransition) -> StateTransition: ...
+
+    async def list_since(self, monitor_id: UUID, *, since: datetime) -> list[StateTransition]: ...
+
+
+class Notifier(Protocol):
+    """Delivers one alert to one channel (SPEC §3.7). The `AlertService` selects the
+    notifier by `channel.type`, then hands it the channel (whose `config` is already
+    decrypted) and the `AlertNotification`. A notifier reads `config` to know where to
+    send, classifies the outcome as a `NotifyResult`, and **never raises** — a channel
+    outage is recorded as a `NotificationLog` with `ok=False`, it cannot crash the
+    check pipeline. Secret `config` values are used only to send and never appear in
+    the result detail or any log (SPEC §6)."""
+
+    async def send(
+        self, channel: AlertChannel, notification: AlertNotification
+    ) -> NotifyResult: ...
 
 
 class SecretBox(Protocol):

@@ -22,7 +22,14 @@ from sentinel.domain.entities import (
     TokenState,
 )
 from sentinel.domain.ports import Clock
-from sentinel.domain.value_objects import Event, ProbeRequest, ProbeResponse
+from sentinel.domain.value_objects import (
+    AlertNotification,
+    Event,
+    NotifyResult,
+    ProbeRequest,
+    ProbeResponse,
+    StateTransition,
+)
 
 
 class FixedClock:
@@ -264,6 +271,39 @@ class InMemoryNotificationLogRepository:
         matches = [e for e in self._store if e.monitor_id == monitor_id]
         matches.sort(key=lambda e: e.fired_at, reverse=True)
         return [copy.deepcopy(e) for e in matches[:limit]]
+
+
+class InMemoryStateTransitionRepository:
+    """`StateTransitionRepository` backed by a list. `list_since` filters by
+    `at >= since` and returns oldest-first, mirroring the SQL adapter so flap
+    damping behaves identically under the contract test."""
+
+    def __init__(self) -> None:
+        self._store: list[StateTransition] = []
+
+    async def add(self, transition: StateTransition) -> StateTransition:
+        self._store.append(transition)
+        return transition
+
+    async def list_since(self, monitor_id: UUID, *, since: datetime) -> list[StateTransition]:
+        matches = [t for t in self._store if t.monitor_id == monitor_id and t.at >= since]
+        matches.sort(key=lambda t: t.at)
+        return list(matches)
+
+
+class FakeNotifier:
+    """A scriptable `Notifier` that records the (channel, notification) pairs it was
+    asked to send and returns a canned `NotifyResult`, so `AlertService` can be tested
+    without any network (PLAN D4 — fakes over mocks). Contract-compliant: it returns a
+    result and never raises, including for the failure case (`ok=False`)."""
+
+    def __init__(self, result: NotifyResult | None = None) -> None:
+        self.result = result or NotifyResult(ok=True, detail="HTTP 200")
+        self.calls: list[tuple[AlertChannel, AlertNotification]] = []
+
+    async def send(self, channel: AlertChannel, notification: AlertNotification) -> NotifyResult:
+        self.calls.append((channel, notification))
+        return self.result
 
 
 class FakeHeartbeat:

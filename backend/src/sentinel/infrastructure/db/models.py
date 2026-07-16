@@ -130,6 +130,21 @@ class NotificationLogRow(SQLModel, table=True):
     detail: str | None = Field(default=None)
 
 
+class StateTransitionRow(SQLModel, table=True):
+    """Append-only history of confirmed up↔down transitions (SPEC §3.8) — the
+    flap-window source for alerting (SPEC §3.7). One row per confirmed flip; `id` is
+    a surrogate key (the domain `StateTransition` carries none). Indexed by
+    `monitor_id` for the per-monitor window read."""
+
+    __tablename__ = "state_transitions"
+
+    id: uuid.UUID = Field(primary_key=True)
+    monitor_id: uuid.UUID = Field(index=True)
+    from_status: str
+    to_status: str
+    at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
+
+
 class AuthSourceRow(SQLModel, table=True):
     """Auth source (SPEC §3.9). `request` and `oauth` are JSONB; the secret values
     inside them (request body, secret headers, oauth client_secret/username/

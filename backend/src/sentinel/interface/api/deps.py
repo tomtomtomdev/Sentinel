@@ -10,6 +10,7 @@ from functools import lru_cache
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from sentinel.application.alert_channel_service import AlertChannelService
+from sentinel.application.alert_service import AlertService
 from sentinel.application.auth_source_service import AuthSourceService
 from sentinel.application.auth_token_service import AuthTokenService
 from sentinel.application.check_service import CheckService
@@ -22,19 +23,28 @@ from sentinel.domain.ports import (
     Clock,
     EventBus,
     HttpProbe,
+    NotificationLogRepository,
+    Notifier,
     SecretBox,
+    StateTransitionRepository,
     TokenStore,
 )
+from sentinel.domain.value_objects import AlertPolicy, ChannelType
 from sentinel.infrastructure.clock import SystemClock
-from sentinel.infrastructure.db.alert_channel_repository import SqlAlertChannelRepository
+from sentinel.infrastructure.db.alert_channel_repository import (
+    SqlAlertChannelRepository,
+    SqlNotificationLogRepository,
+)
 from sentinel.infrastructure.db.auth_source_repository import SqlAuthSourceRepository
 from sentinel.infrastructure.db.check_result_repository import SqlCheckResultRepository
 from sentinel.infrastructure.db.check_rollup_repository import SqlCheckRollupRepository
 from sentinel.infrastructure.db.engine import create_engine, create_session_factory
 from sentinel.infrastructure.db.monitor_repository import SqlMonitorRepository
 from sentinel.infrastructure.db.monitor_state_repository import SqlMonitorStateRepository
+from sentinel.infrastructure.db.state_transition_repository import SqlStateTransitionRepository
 from sentinel.infrastructure.db.token_store import SqlTokenStore
 from sentinel.infrastructure.events import InProcessEventBus
+from sentinel.infrastructure.notifiers import EmailNotifier, TelegramNotifier, WebhookNotifier
 from sentinel.infrastructure.probe import HttpxProbe
 from sentinel.infrastructure.secrets import FernetSecretBox
 
@@ -86,6 +96,42 @@ def get_alert_channel_service() -> AlertChannelService:
     return AlertChannelService(get_alert_channel_repository())
 
 
+def get_notification_log_repository() -> NotificationLogRepository:
+    return SqlNotificationLogRepository(get_session_factory())
+
+
+def get_state_transition_repository() -> StateTransitionRepository:
+    return SqlStateTransitionRepository(get_session_factory())
+
+
+@lru_cache
+def get_notifiers() -> dict[ChannelType, Notifier]:
+    """The channel-type → `Notifier` map (SPEC §3.7). One instance per process; each
+    notifier opens its own short-lived HTTP client per send. Email is a parked stub."""
+    return {
+        ChannelType.WEBHOOK: WebhookNotifier(),
+        ChannelType.TELEGRAM: TelegramNotifier(),
+        ChannelType.EMAIL: EmailNotifier(),
+    }
+
+
+def get_alert_service() -> AlertService:
+    settings = get_settings()
+    return AlertService(
+        channels=get_alert_channel_repository(),
+        notifications=get_notification_log_repository(),
+        transitions=get_state_transition_repository(),
+        notifiers=get_notifiers(),
+        clock=get_clock(),
+        policy=AlertPolicy(
+            flap_threshold=settings.alert_flap_threshold,
+            flap_window_seconds=settings.alert_flap_window_seconds,
+            renotify_after_seconds=settings.alert_renotify_after_seconds,
+        ),
+        deep_link_base=settings.dashboard_base_url,
+    )
+
+
 def get_auth_token_service() -> AuthTokenService:
     return AuthTokenService(
         sources=get_auth_source_repository(),
@@ -134,6 +180,7 @@ def get_check_service() -> CheckService:
         states=SqlMonitorStateRepository(factory),
         rollups=SqlCheckRollupRepository(factory, clock=clock),
         events=get_event_bus(),
+        alerts=get_alert_service(),
         auth_sources=get_auth_source_repository(),
         auth=get_auth_token_service(),
     )

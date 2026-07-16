@@ -11,7 +11,9 @@ from collections.abc import Sequence
 from datetime import datetime, timedelta
 
 from sentinel.domain.value_objects import (
+    AlertNotification,
     AlertPolicy,
+    MonitorStatus,
     NotifyDecision,
     NotifyKind,
     StateTransition,
@@ -67,3 +69,22 @@ def should_notify(
             )
 
     return NotifyDecision(notify=True, kind=NotifyKind.TRANSITION, reason="confirmed transition")
+
+
+def format_alert_message(notification: AlertNotification) -> str:
+    """Render an `AlertNotification` as human-readable text for the telegram/email
+    notifiers (SPEC §3.7). Pure — the webhook notifier instead sends the structured
+    fields as JSON. Carries only the secret-free payload fields, never a config value."""
+    n = notification
+    if n.kind is NotifyKind.FLAPPING:
+        headline = f"⚠️ {n.monitor_name} is flapping"
+    elif n.status is MonitorStatus.UP:
+        headline = f"✅ {n.monitor_name} recovered (up)"
+    else:
+        headline = f"🔴 {n.monitor_name} is {n.status.value}"
+    lines = [headline, f"since {n.since.isoformat()}"]
+    if n.last_error is not None:
+        lines.append(f"error: {n.last_error.value}")
+    if n.deep_link:
+        lines.append(n.deep_link)
+    return "\n".join(lines)

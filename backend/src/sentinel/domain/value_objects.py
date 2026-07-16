@@ -222,6 +222,34 @@ class NotifyDecision:
 
 
 @dataclass(frozen=True)
+class AlertNotification:
+    """The alert payload delivered to a channel (SPEC §3.7): the monitor's name, its
+    new `status`, when that status began (`since`), the last error (if any), and a
+    deep link back to the monitor. `kind` distinguishes a normal per-transition alert
+    from a flapping summary so a notifier can word the message accordingly. Carries
+    no secret — safe to serialize into a webhook body or a message."""
+
+    monitor_id: UUID
+    monitor_name: str
+    status: MonitorStatus
+    since: datetime
+    kind: NotifyKind
+    last_error: ErrorKind | None = None
+    deep_link: str | None = None
+
+
+@dataclass(frozen=True)
+class NotifyResult:
+    """The outcome of one delivery attempt (SPEC §3.7). `ok` is whether the channel
+    accepted the alert; `detail` is a short, **secret-free** note for the audit log
+    (e.g. ``"HTTP 200"``, ``"ConnectTimeout"``) — never a URL, token, or config
+    value, which could themselves be secrets."""
+
+    ok: bool
+    detail: str | None = None
+
+
+@dataclass(frozen=True)
 class Stats:
     """Computed uptime/latency over a window (SPEC §3.5, §5). `status`/`since` are
     intentionally absent — they come from the monitor's `MonitorState`. A latency
