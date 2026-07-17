@@ -1,7 +1,8 @@
-import { useState } from "react";
-import { Link } from "react-router-dom";
+import { useEffect, useState } from "react";
+import { Link, useLocation } from "react-router-dom";
 
 import { MonitorCard } from "../components/MonitorCard";
+import { Toast, useToast } from "../components/Toast";
 import { PlusIcon, SearchIcon, TrendingUpIcon } from "../components/icons";
 import { formatUptime } from "../lib/format";
 import { useMonitors, type MonitorListItem } from "../lib/monitors";
@@ -56,6 +57,21 @@ export function DashboardPage() {
   const { data: monitors, isPending, isError, error } = useMonitors();
   const [query, setQuery] = useState("");
   const now = new Date();
+
+  // Arriving from the create flow: show the toast and mark the created
+  // monitors NEW for 6 seconds (design "Interactions & Behavior").
+  const location = useLocation();
+  const arrival = (location.state ?? {}) as { toast?: string; newIds?: string[] };
+  const { message } = useToast(arrival.toast ?? null);
+  const [newIds, setNewIds] = useState<string[]>(arrival.newIds ?? []);
+  useEffect(() => {
+    if (newIds.length === 0) {
+      return;
+    }
+    const timer = window.setTimeout(() => setNewIds([]), 6000);
+    return () => window.clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const filtered = (monitors ?? []).filter((m) => {
     const q = query.trim().toLowerCase();
@@ -152,12 +168,18 @@ export function DashboardPage() {
           ) : (
             <div className="grid grid-cols-[repeat(auto-fill,minmax(300px,1fr))] gap-[14px]">
               {filtered.map((m) => (
-                <MonitorCard key={m.id} monitor={m} now={now} />
+                <MonitorCard
+                  key={m.id}
+                  monitor={m}
+                  now={now}
+                  isNew={newIds.includes(m.id)}
+                />
               ))}
             </div>
           )}
         </>
       )}
+      <Toast message={message} />
     </div>
   );
 }

@@ -143,6 +143,36 @@ describe("dashboard", () => {
     expect(screen.queryByText("Prod health")).not.toBeInTheDocument();
   });
 
+  it("shows the create toast and NEW pill when arriving from the create flow", async () => {
+    mockedGet.mockResolvedValue(FIXTURES);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter
+          initialEntries={[
+            {
+              pathname: "/monitors",
+              state: {
+                toast: "Monitor created — now watching",
+                newIds: ["00000000-0000-0000-0000-000000000001"],
+              },
+            },
+          ]}
+        >
+          <DashboardPage />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    expect(
+      await screen.findByText("Monitor created — now watching"),
+    ).toBeInTheDocument();
+    const card = (await screen.findByText("Prod health")).closest("article")!;
+    expect(within(card).getByText("NEW")).toBeInTheDocument();
+  });
+
   it("shows an empty state with an add CTA when there are no monitors", async () => {
     mockedGet.mockResolvedValue([]);
     renderDashboard();

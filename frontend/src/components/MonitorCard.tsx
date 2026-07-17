@@ -33,7 +33,15 @@ export function MethodChip({ method }: { method: string }) {
   );
 }
 
-export function MonitorCard({ monitor, now }: { monitor: MonitorListItem; now: Date }) {
+export function MonitorCard({
+  monitor,
+  now,
+  isNew = false,
+}: {
+  monitor: MonitorListItem;
+  now: Date;
+  isNew?: boolean;
+}) {
   const summary = monitor.summary;
   const status = STATUS[summary?.status ?? "unknown"];
   const hasData = (summary?.checks ?? 0) > 0;
@@ -47,6 +55,11 @@ export function MonitorCard({ monitor, now }: { monitor: MonitorListItem; now: D
             <span className="truncate text-[14.5px] font-semibold tracking-[-0.01em]">
               {monitor.name}
             </span>
+            {isNew && (
+              <span className="rounded-[5px] bg-accent-tint px-[5px] text-[10px] font-bold text-accent">
+                NEW
+              </span>
+            )}
           </div>
           <div className="mt-2 flex items-center gap-2">
             <MethodChip method={monitor.method} />

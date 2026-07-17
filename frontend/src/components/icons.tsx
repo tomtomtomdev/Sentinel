@@ -67,3 +67,40 @@ export const ArrowLeftIcon = icon(
     <path d="M19 12H5" />
   </>,
 );
+
+export const CheckIcon = icon(<path d="M20 6 9 17l-5-5" />);
+
+export const XIcon = icon(
+  <>
+    <path d="M18 6 6 18" />
+    <path d="m6 6 12 12" />
+  </>,
+);
+
+export const TerminalIcon = icon(
+  <>
+    <polyline points="4 17 10 11 4 5" />
+    <line x1={12} x2={20} y1={19} y2={19} />
+  </>,
+);
+
+export const UploadIcon = icon(
+  <>
+    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+    <polyline points="17 8 12 3 7 8" />
+    <line x1={12} x2={12} y1={3} y2={15} />
+  </>,
+);
+
+export const PenIcon = icon(
+  <path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z" />,
+);
+
+export const RefreshIcon = icon(
+  <>
+    <path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8" />
+    <path d="M21 3v5h-5" />
+    <path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16" />
+    <path d="M3 21v-5h5" />
+  </>,
+);

@@ -20,7 +20,29 @@
 
 ## Current state
 
-- **Phase:** **S11 in progress — S11.2 complete (dashboard screen).** The
+- **Phase:** **S11 in progress — S11.3 complete (add-monitor screen).** The
+  add-monitor flow works end to end (`docs/design/` Screen 2): segmented tabs —
+  **Paste cURL** (textarea + example filler → `POST /imports/curl` → detected-
+  request preview: method chip, URL, headers, body pre → Create), **Import
+  collection** (dropzone/browse → `POST /imports/postman` multipart → selectable
+  endpoint list + select/deselect-all → "Create N monitors" sequential
+  `POST /monitors`), **Manual setup** (name w/ URL-derived fallback, method +
+  URL, repeatable header rows) — plus the shared **Monitoring rules** block
+  (interval 30s–30m → `interval_seconds`, expected status → `status_code equals`
+  assertion, assertion rows mapping to `body_contains`/`json_path_equals` [two
+  inputs: path + value]/`status_code`/`max_latency_ms` — pure `buildAssertions`
+  in `src/lib/rules.ts`). Create navigates back with router state → dashboard
+  shows the design's success **toast** + 6s **NEW pill** on the created cards.
+  Parse/upload/validation failures surface as toasts (never a dead form). New
+  `api.postForm` (multipart, no forced JSON content-type; client now calls
+  `fetch(url, init)` directly). **Deviations from the design (recorded):**
+  import accepts **Postman v2.1 only** (backend SPEC §3.1 has no OpenAPI/generic
+  parser — design mentions them; parked to SPEC §8), parsing is **server-side**
+  (the S3/S4 domain parsers are the single source of truth; the design's
+  client-side parser spec is unused), and the default assertion row is empty
+  (the design's default "status 200" row would duplicate the expected-status
+  field, which already emits that assertion).
+- **Prior phase:** **S11.2 complete (dashboard screen).** The
   dashboard (`docs/design/` Screen 1) renders real data from
   `GET /monitors?include=summary` via TanStack Query (`useMonitors` in
   `src/lib/monitors.ts`, types mirroring the backend DTOs): 4 summary stat
@@ -236,19 +258,17 @@
 
 ## Next action
 
-➡️ **Begin S11.3 — add-monitor screen** (design: `docs/design/README.md` Screen
-2): segmented tabs **Paste cURL** (textarea + parse → detected-request card;
-use the backend `POST /api/v1/imports/curl` for parsing — it exists since S3
-and is the single parser source of truth; design's client-side parser spec is
-the fallback only if offline parsing is wanted), **Import collection**
-(dropzone + `POST /api/v1/imports/postman`; check `imports.py` for the exact
-routes/shapes first), **Manual setup** (name/method/URL/headers rows), shared
-**Monitoring rules** block (interval select, expected status, assertion rows →
-map to backend `assertions[{type,params}]` — verify assertion type names in
-`domain/`), footer Cancel/Create → `POST /monitors` per draft, success toast +
-navigate back, NEW pill on just-created monitors (design: 6s). Component tests:
-each tab renders, curl parse → preview, create posts the right body, validation
-toast on empty URL, import list select/deselect + create-N.
+➡️ **Begin S11.4 — monitor detail shell + auth-source manage UI** (finishes
+S11): (a) monitor detail route `/monitors/:id` — name, status pill, stats
+summary (`GET /monitors/{id}` + `GET /monitors/{id}/stats?window=24h`), make
+dashboard cards navigate to it (design: cards are `cursor:pointer`); charts +
+recent-runs table land in S12, keep it a shell. (b) Auth-source management —
+list/create/edit/delete + manual refresh (`/api/v1/auth-sources` routes from
+S5b.3; check `auth_sources.py` for exact DTOs; token_state summary shown, no
+token value ever) and linking a monitor to a source (`auth_source_id` on
+create/patch — a select in the add-monitor manual tab + detail page). No
+design mockup exists for auth sources (not in `docs/design/`) — follow the
+existing token/layout conventions. Component tests per screen.
 
 **Parked follow-ups from S11.1** (not blockers): the auth token has no settings
 UI yet (localStorage/`VITE_AUTH_TOKEN` only — add an entry surface when a 401 is
@@ -315,7 +335,7 @@ notifiers open a short-lived `httpx.AsyncClient` per send (no shared pooled clie
 - [ ] **S11** Frontend scaffold _(split — see log)_
   - [x] **S11.1** Scaffold + app shell + API client (Vite/React/TS/Tailwind/Vitest)
   - [x] **S11.2** Dashboard screen (stat cards + monitor card grid)
-  - [ ] **S11.3** Add-monitor screen (cURL / import / manual + monitoring rules)
+  - [x] **S11.3** Add-monitor screen (cURL / import / manual + monitoring rules)
   - [ ] **S11.4** Monitor detail shell + auth-source manage UI
 - [ ] **S12** Frontend charts + live
 - [ ] **S13** Containerize & deploy
@@ -337,6 +357,65 @@ notifiers open a short-lived `httpx.AsyncClient` per send (no shared pooled clie
 > Commit(s): <conventional commit subject lines>
 > Resume hint: <the very next concrete step>
 > ```
+
+### S11.3 — Add-monitor screen (cURL / import / manual + rules)  · 2026-07-17
+Done: A monitor can be created from the UI three ways (design Screen 2, SPEC
+§3.1). **Paste cURL:** textarea (+ "Use example") → `POST /imports/curl` → the
+"Detected request" preview card (method chip, URL, `key:` headers, body
+`<pre>`) → Monitoring rules → Create. **Import collection:** dropzone with
+drag-over state or browse → `POST /imports/postman` (multipart via new
+`api.postForm`) → header "{file} · N requests" + Select/Deselect-all +
+checkbox list (method chip, name, URL) → interval+status (compact rules) →
+"Create N monitor(s)" posting each selected draft. **Manual setup:** name
+(blank → derived from URL path tail), method select + URL, repeatable header
+rows (≥1 kept), full rules. Shared **Monitoring rules**: interval select
+(30s/1m/5m/10m/30m → seconds via `intervalToSeconds`), expected status →
+`{type:"status_code",params:{equals}}`, assertion rows → `body_contains{text}`
+/ `json_path_equals{path,value}` (row grows a second path input — the design's
+single value field can't carry both) / `status_code{equals}` /
+`max_latency_ms{value}`; pure `buildAssertions` skips blank rows. Create
+success: invalidate the monitors query, `navigate("/monitors", {state:{toast,
+newIds}})` → dashboard shows the bottom-center auto-dismiss **Toast** (new
+`components/Toast.tsx`, ~3s, re-trigger resets) and a 6s **NEW pill** on the
+new cards (`MonitorCard isNew`). Failures (unparseable cURL, invalid JSON,
+missing URL) → toasts, form stays. API client change: `apiFetch` now calls
+`fetch(url, init)` (not `new Request`) so a jsdom `FormData` isn't coerced
+cross-realm in tests; behaviour identical in the browser.
+Deviations from the design (all deliberate): Postman v2.1 **only** (no
+OpenAPI/generic parser in the backend — SPEC §3.1; candidates for §8), parsing
+is **server-side** (S3/S4 domain parsers are the single source of truth — the
+design's client-side parser specs are not reimplemented), default assertion
+list is empty (the design's default "Status code equals 200" row would emit a
+duplicate of the expected-status field's assertion).
+Tests: `tests/rules.test.ts` (5 — interval mapping + options, every row type →
+backend params, blank-skip), `tests/add-monitor.test.tsx` (8 — tabs render/
+default, curl parse posts command + preview shows chip/URL/header/body, create
+posts draft+rules exactly and returns to dashboard, parse failure toast,
+manual create with headers + 5m interval, missing-URL toast + no post, import
+upload → postForm + list + deselect + create-1-of-2, upload-failure toast),
+`api.test.ts` +1 (postForm: no forced content-type, Bearer kept, body
+passthrough), `dashboard.test.tsx` +1 (arrival state → toast + NEW pill).
+`pnpm test` → **39 passed**; `pnpm build` clean. Backend untouched (495/50 +
+ruff + mypy clean). Real-wire smoke: `POST /imports/curl` through the Vite
+proxy returns the exact `MonitorDraft` shape the client types expect.
+Decisions: none new (D32 conventions; deviations recorded here + Parking lot).
+Files: `frontend/src/lib/{rules.ts,imports.ts}` (new),
+`frontend/src/components/{Toast.tsx}` (new), `frontend/src/components/
+{icons.tsx,MonitorCard.tsx}` (+6 icons; +NEW pill), `frontend/src/lib/api.ts`
+(+`postForm`, fetch(url, init)), `frontend/src/pages/AddMonitorPage.tsx`
+(placeholder → full screen), `frontend/src/pages/DashboardPage.tsx` (arrival
+toast + newIds), `frontend/tests/{rules.test.ts,add-monitor.test.tsx}` (new) +
+`api.test.ts`/`dashboard.test.tsx` additions.
+Follow-ups / parked: OpenAPI + generic-JSON import (needs a backend parser —
+SPEC §8 candidate); "Load an example collection" link (design) omitted — needs
+a bundled sample; per-draft edit before create (name/URL tweaks) not offered;
+sequential create-N has no partial-failure recovery UI (first error toasts and
+stops); body/`body_kind` not editable in the manual tab (curl/import only).
+Commit(s): `feat(frontend): add-monitor screen — cURL parse, Postman import,
+manual setup + monitoring rules (S11.3)`.
+Resume hint: start S11.4 — read `interface/api/auth_sources.py` DTOs first;
+then failing tests for the detail-page shell (`/monitors/:id`) + auth-source
+list/create/refresh screens; make dashboard cards link to the detail page.
 
 ### S11.2 — Dashboard screen (stat cards + monitor card grid)  · 2026-07-17
 Done: The dashboard is real (design `docs/design/README.md` Screen 1). New

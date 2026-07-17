@@ -67,14 +67,21 @@ async function toApiError(response: Response): Promise<ApiError> {
 
 async function apiFetch<T>(
   path: string,
-  options: { method?: string; body?: unknown; signal?: AbortSignal } = {},
+  options: {
+    method?: string;
+    body?: unknown;
+    form?: FormData;
+    signal?: AbortSignal;
+  } = {},
 ): Promise<T> {
   const headers = new Headers({ Accept: "application/json" });
   const token = getAuthToken();
   if (token) {
     headers.set("Authorization", `Bearer ${token}`);
   }
-  if (options.body !== undefined) {
+  // FormData sets its own multipart content type (with boundary); only JSON
+  // bodies get an explicit one.
+  if (options.body !== undefined && options.form === undefined) {
     headers.set("Content-Type", "application/json");
   }
 
@@ -82,14 +89,14 @@ async function apiFetch<T>(
   // deploy) stays valid outside the browser's implicit base (e.g. in tests),
   // and an absolute one wins over the base per the URL spec.
   const url = new URL(`${API_BASE_URL}${path}`, window.location.origin);
-  const request = new Request(url, {
+  const response = await fetch(url, {
     method: options.method ?? "GET",
     headers,
-    body: options.body === undefined ? undefined : JSON.stringify(options.body),
+    body:
+      options.form ??
+      (options.body === undefined ? undefined : JSON.stringify(options.body)),
     signal: options.signal,
   });
-
-  const response = await fetch(request);
   if (!response.ok) {
     throw await toApiError(response);
   }
@@ -103,6 +110,8 @@ export const api = {
   get: <T>(path: string, signal?: AbortSignal) => apiFetch<T>(path, { signal }),
   post: <T>(path: string, body: unknown) =>
     apiFetch<T>(path, { method: "POST", body }),
+  postForm: <T>(path: string, form: FormData) =>
+    apiFetch<T>(path, { method: "POST", form }),
   patch: <T>(path: string, body: unknown) =>
     apiFetch<T>(path, { method: "PATCH", body }),
   delete: <T = void>(path: string) => apiFetch<T>(path, { method: "DELETE" }),

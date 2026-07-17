@@ -21,7 +21,8 @@ function stubFetch(response: {
 }
 
 function requestOf(fetchMock: ReturnType<typeof vi.fn>): Request {
-  return fetchMock.mock.calls[0][0] as Request;
+  const [input, init] = fetchMock.mock.calls[0] as [URL, RequestInit];
+  return new Request(input, init);
 }
 
 describe("api client auth (S9a: Bearer token on every call)", () => {
@@ -69,6 +70,23 @@ describe("api client requests", () => {
     expect(req.method).toBe("POST");
     expect(req.headers.get("Content-Type")).toBe("application/json");
     await expect(req.json()).resolves.toEqual({ name: "Prod health" });
+  });
+
+  it("postForm passes the FormData through without forcing a JSON content type", async () => {
+    setAuthToken("tok-123");
+    const fetchMock = stubFetch({ body: { drafts: [] } });
+    const form = new FormData();
+    form.append("file", new File(["{}"], "c.json"));
+
+    await api.postForm("/imports/postman", form);
+
+    const [, init] = fetchMock.mock.calls[0] as [URL, RequestInit];
+    expect(init.method).toBe("POST");
+    // the browser derives the multipart content type (with boundary) from the
+    // FormData body — the client must NOT set one itself
+    expect(new Headers(init.headers).get("Content-Type")).toBeNull();
+    expect(new Headers(init.headers).get("Authorization")).toBe("Bearer tok-123");
+    expect(init.body).toBe(form);
   });
 
   it("DELETE tolerates an empty 204 response", async () => {
