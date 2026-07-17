@@ -20,7 +20,21 @@
 
 ## Current state
 
-- **Phase:** **S11 in progress — S11.1 complete (frontend scaffold + app shell +
+- **Phase:** **S11 in progress — S11.2 complete (dashboard screen).** The
+  dashboard (`docs/design/` Screen 1) renders real data from
+  `GET /monitors?include=summary` via TanStack Query (`useMonitors` in
+  `src/lib/monitors.ts`, types mirroring the backend DTOs): 4 summary stat
+  cards (Operational / **Unknown** / Down / Avg uptime·24h — the design's
+  "Degraded" slot renders the backend's `unknown`, which has no degraded status
+  in v1; avg is over monitors with `checks > 0`, "—" when none), monitor card
+  grid (status dot + name, method chip, protocol-stripped URL, uptime/p95
+  latency/last-check footer; `checks == 0` → "No data yet" footer), client-side
+  search filter (name or URL), empty state with add CTA, loading + error
+  panels. Pure display formatters in `src/lib/format.ts` (stripProtocol,
+  formatUptime — trims trailing zeros, formatLatency — "—" when null, timeAgo —
+  injected `now`). **26-bar sparkline deferred to S12** (needs per-monitor
+  results = N+1 requests; S11 scope per PLAN §5 is "status + 24h uptime").
+- **Prior phase:** **S11.1 complete (frontend scaffold + app shell +
   API client).** S11 split into S11.1–S11.4 (scaffold / dashboard / add-monitor /
   detail+auth-sources). `frontend/` now exists (PLAN §2 stack: pnpm + Vite 6 +
   React 18 + TS strict + Tailwind v4 + TanStack Query + React Router 7; tests
@@ -222,15 +236,19 @@
 
 ## Next action
 
-➡️ **Begin S11.2 — dashboard screen** (design: `docs/design/README.md` Screen 1):
-4 summary stat cards (Operational / Degraded / Down / Avg uptime 24h), monitor
-card grid (status dot + name + NEW pill, method chip + stripped URL, 26-bar
-sparkline, uptime/latency/last-check footer), search filter, entrance animation.
-Data via TanStack Query from `GET /monitors?include=summary` (verify the exact
-include shape in `interface/api/` first — stats summary per monitor was built in
-S7.3). Empty state for zero monitors. Component tests (`pnpm test`) with mocked
-`fetch` or a stubbed api module: cards render per status, counts/avg computed,
-search filters, empty state.
+➡️ **Begin S11.3 — add-monitor screen** (design: `docs/design/README.md` Screen
+2): segmented tabs **Paste cURL** (textarea + parse → detected-request card;
+use the backend `POST /api/v1/imports/curl` for parsing — it exists since S3
+and is the single parser source of truth; design's client-side parser spec is
+the fallback only if offline parsing is wanted), **Import collection**
+(dropzone + `POST /api/v1/imports/postman`; check `imports.py` for the exact
+routes/shapes first), **Manual setup** (name/method/URL/headers rows), shared
+**Monitoring rules** block (interval select, expected status, assertion rows →
+map to backend `assertions[{type,params}]` — verify assertion type names in
+`domain/`), footer Cancel/Create → `POST /monitors` per draft, success toast +
+navigate back, NEW pill on just-created monitors (design: 6s). Component tests:
+each tab renders, curl parse → preview, create posts the right body, validation
+toast on empty URL, import list select/deselect + create-N.
 
 **Parked follow-ups from S11.1** (not blockers): the auth token has no settings
 UI yet (localStorage/`VITE_AUTH_TOKEN` only — add an entry surface when a 401 is
@@ -296,7 +314,7 @@ notifiers open a short-lived `httpx.AsyncClient` per send (no shared pooled clie
   - [x] **S10.2** Retention pruning (raw results + state transitions + rollups)
 - [ ] **S11** Frontend scaffold _(split — see log)_
   - [x] **S11.1** Scaffold + app shell + API client (Vite/React/TS/Tailwind/Vitest)
-  - [ ] **S11.2** Dashboard screen (stat cards + monitor card grid)
+  - [x] **S11.2** Dashboard screen (stat cards + monitor card grid)
   - [ ] **S11.3** Add-monitor screen (cURL / import / manual + monitoring rules)
   - [ ] **S11.4** Monitor detail shell + auth-source manage UI
 - [ ] **S12** Frontend charts + live
@@ -319,6 +337,57 @@ notifiers open a short-lived `httpx.AsyncClient` per send (no shared pooled clie
 > Commit(s): <conventional commit subject lines>
 > Resume hint: <the very next concrete step>
 > ```
+
+### S11.2 — Dashboard screen (stat cards + monitor card grid)  · 2026-07-17
+Done: The dashboard is real (design `docs/design/README.md` Screen 1). New
+`useMonitors` TanStack Query hook (`src/lib/monitors.ts`) fetches
+`GET /monitors?include=summary` (S7.3 shape: `summary.{status,since,
+last_check_at,uptime_pct,latency_p95_ms,checks}`); TS types mirror the backend
+DTO field names. `DashboardPage` renders: header (h1, pulsing live indicator,
+**search field** filtering by name/URL client-side, Add-monitor button), a
+4-up **summary stat** strip — Operational / **Unknown** / Down counts + Avg
+uptime·24h (mean over monitors with `checks > 0`; "—" when none) — and the
+**monitor card grid** (`auto-fill minmax(300px,1fr)`; `MonitorCard`: status
+dot + truncated name, colored method chip, protocol-stripped mono URL, status
+pill, footer with colored uptime, mono p95 latency ("—" when null), relative
+last-check time; `checks == 0` → "No data yet — waiting for the first check").
+Explicit loading, error ("Could not load monitors — …"), and empty ("No
+monitors yet" + CTA) states. Pure formatters in `src/lib/format.ts`:
+`stripProtocol`, `formatUptime` (trims trailing zeros: "100%", "99.79%"),
+`formatLatency`, `timeAgo` (injected `now` — pure). **Design adaptations:**
+backend has no `degraded` status (SPEC §3.8: up/down/unknown), so the design's
+Degraded slot (amber) renders **Unknown**; the 26-bar sparkline is **deferred
+to S12** (needs per-monitor recent results = N+1 fetches; S11 scope is "status
++ 24h uptime" per PLAN §5). NEW-pill behavior belongs to S11.3 (create flow).
+Tests: `tests/format.test.ts` (5 blocks — protocol strip, uptime/latency
+formats, timeAgo buckets + null) + `tests/dashboard.test.tsx` (6 — include
+param on the query, card contents per status incl. no-data card, stat-card
+counts + avg over data-bearing monitors only, search filter, empty state,
+error state); `app.test.tsx` now mocks the api module (and `tests/setup.ts`
+switched `restoreAllMocks` → `clearAllMocks` so factory-time mock
+implementations survive between tests). `pnpm test` → **24 passed**;
+`pnpm build` (tsc strict) clean. Backend untouched: 495/50 + ruff + mypy
+clean. Real-wire smoke: uvicorn (with `SECRET_KEY`) + `pnpm dev` → created a
+monitor via `POST /monitors`, `GET /monitors?include=summary` through the Vite
+proxy returns exactly the typed shape (unknown/checks=0 → no-data card path);
+seeded monitor deleted after.
+Decisions: none new (D32 covers the conventions; the Unknown-for-Degraded
+mapping + sparkline deferral are S12-visible notes, recorded here).
+Files: `frontend/src/lib/{monitors.ts,format.ts}` (new),
+`frontend/src/components/MonitorCard.tsx` (new — card + `MethodChip`),
+`frontend/src/components/icons.tsx` (+Search, +TrendingUp),
+`frontend/src/pages/DashboardPage.tsx` (placeholder → real screen),
+`frontend/tests/{format.test.ts,dashboard.test.tsx}` (new),
+`frontend/tests/{app.test.tsx,setup.ts}` (api mock; clearAllMocks).
+Follow-ups / parked: 26-bar sparkline + live updates via SSE (**S12**);
+monitor cards not yet clickable (detail route is S11.4); dashboard doesn't
+poll/refresh (S12 live slice decides polling vs SSE invalidation); the design's
+NEW pill arrives with the create flow (S11.3).
+Commit(s): `feat(frontend): dashboard — summary stats + monitor card grid from
+live API data (S11.2)`.
+Resume hint: start S11.3 — read `interface/api/imports.py` for the exact
+curl/postman import routes + draft shape, and the assertion type names in
+`domain/`; then write failing component tests for the add-monitor tabs.
 
 ### S11.1 — Frontend scaffold + app shell + API client  · 2026-07-17
 Done: `frontend/` exists and boots (PLAN §2 stack): pnpm + Vite 6 + React 18 +

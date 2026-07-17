@@ -47,6 +47,20 @@ export const PlusIcon = icon(
   </>,
 );
 
+export const SearchIcon = icon(
+  <>
+    <circle cx={11} cy={11} r={8} />
+    <path d="m21 21-4.3-4.3" />
+  </>,
+);
+
+export const TrendingUpIcon = icon(
+  <>
+    <path d="M16 7h6v6" />
+    <path d="m22 7-8.5 8.5-5-5L2 17" />
+  </>,
+);
+
 export const ArrowLeftIcon = icon(
   <>
     <path d="m12 19-7-7 7-7" />

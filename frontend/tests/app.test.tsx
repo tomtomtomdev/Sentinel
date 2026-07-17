@@ -4,6 +4,16 @@ import { MemoryRouter } from "react-router-dom";
 
 import { AppRoutes } from "../src/App";
 
+vi.mock("../src/lib/api", () => ({
+  api: {
+    get: vi.fn().mockResolvedValue([]),
+    post: vi.fn(),
+    patch: vi.fn(),
+    delete: vi.fn(),
+  },
+  ApiError: class ApiError extends Error {},
+}));
+
 function renderAt(path: string) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
