@@ -50,6 +50,10 @@ front-test:
 front-dev:
     cd {{frontend}} && pnpm dev
 
+# frontend type-check + production build (after S11)
+front-build:
+    cd {{frontend}} && pnpm build
+
 # whole stack via docker compose (after S13)
 up:
     docker compose up --build

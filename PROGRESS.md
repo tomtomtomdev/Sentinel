@@ -20,7 +20,28 @@
 
 ## Current state
 
-- **Phase:** **S10 complete (S10.2 — retention pruning).** History now prunes itself
+- **Phase:** **S11 in progress — S11.1 complete (frontend scaffold + app shell +
+  API client).** S11 split into S11.1–S11.4 (scaffold / dashboard / add-monitor /
+  detail+auth-sources). `frontend/` now exists (PLAN §2 stack: pnpm + Vite 6 +
+  React 18 + TS strict + Tailwind v4 + TanStack Query + React Router 7; tests
+  Vitest 3 + Testing Library, jsdom, in `frontend/tests/`). Design tokens from
+  `docs/design/README.md` live as Tailwind `@theme` variables in `src/index.css`
+  (fonts Hanken Grotesk/JetBrains Mono via Google Fonts in `index.html`; status/
+  accent/border palette; `sntIn`/`sntPulse` keyframes; shared `.snt-field` focus
+  style). App shell: 240px sidebar (brand, **Monitors** nav only — the design's
+  Incidents/Alerts/Status-pages nav is v1 out-of-scope per SPEC §8, deliberately
+  omitted; static Workspace account card) + routes `/monitors` (dashboard
+  placeholder: h1, live indicator, Add-monitor button) and `/monitors/new`
+  (back link + heading placeholder); `/` redirects to `/monitors`. Typed API
+  client (`src/lib/api.ts`): `api.get/post/patch/delete`, base URL
+  `VITE_API_BASE_URL` (default `/api/v1`, resolved absolute against the page
+  origin), **S9a Bearer token on every call** — token from
+  localStorage(`sentinel.auth_token`) with `VITE_AUTH_TOKEN` dev fallback
+  (`src/lib/config.ts`) — SPEC §5 error envelope mapped to typed `ApiError`
+  (code/message/details/status; non-envelope bodies → `http_<status>`), 204-safe.
+  Vite dev proxy `/api` → `localhost:8000` (same-origin dev, no CORS). justfile
+  gained `front-build`; `front-test`/`front-dev` recipes now real.
+- **Prior phase:** **S10 complete (S10.2 — retention pruning).** History now prunes itself
   (SPEC §6, D31): `prune_before(cutoff) -> int` on `CheckResultRepository`
   (`finished_at`), `StateTransitionRepository` (`at`), `CheckRollupRepository`
   (`bucket_start`) — strictly-older-than, bulk DELETE across all monitors, port +
@@ -201,14 +222,22 @@
 
 ## Next action
 
-➡️ **Begin S11 — frontend scaffold** (PLAN §5): Vite SPA, API client (sends the S9a
-Bearer token on every call), dashboard list with status + 24h uptime, monitor detail
-shell, create form, import UI, auth-source manage UI. **Design source-of-truth:
-`docs/design/`** (hi-fi handoff — dashboard + add-monitor screens, tokens, copy,
-parser specs); component tests via `pnpm test`. The backend API contract has been
-stable since S7 (stats/results/summary) + S9.2 (channels) + S9a (auth). Backend
-alternative if the frontend is deferred: S13 containerize (compose must set
-`AUTH_TOKEN` + `SECRET_KEY`, run migrations, and start web + worker).
+➡️ **Begin S11.2 — dashboard screen** (design: `docs/design/README.md` Screen 1):
+4 summary stat cards (Operational / Degraded / Down / Avg uptime 24h), monitor
+card grid (status dot + name + NEW pill, method chip + stripped URL, 26-bar
+sparkline, uptime/latency/last-check footer), search filter, entrance animation.
+Data via TanStack Query from `GET /monitors?include=summary` (verify the exact
+include shape in `interface/api/` first — stats summary per monitor was built in
+S7.3). Empty state for zero monitors. Component tests (`pnpm test`) with mocked
+`fetch` or a stubbed api module: cards render per status, counts/avg computed,
+search filters, empty state.
+
+**Parked follow-ups from S11.1** (not blockers): the auth token has no settings
+UI yet (localStorage/`VITE_AUTH_TOKEN` only — add an entry surface when a 401 is
+first rendered, likely S11.2+); no frontend CI wiring (PLAN §6 mentions frontend
+tests on PR — revisit at S13); no ESLint/Prettier config (ts strict + tests are
+the gate for now); fonts load from Google Fonts CDN (self-host at S13 if the
+deploy must be offline); sidebar has no responsive collapse.
 
 **Parked follow-ups from S10.2** (not blockers): per-monitor raw **row cap** (SPEC
 "and/or" — age-only shipped); pruning runs only in the **worker** (an API-only
@@ -265,7 +294,11 @@ notifiers open a short-lived `httpx.AsyncClient` per send (no shared pooled clie
 - [x] **S10** SSRF guard + retention _(split — S10.1 guard / S10.2 retention)_
   - [x] **S10.1** SSRF guard (probe + auth-source login + webhook notifier)
   - [x] **S10.2** Retention pruning (raw results + state transitions + rollups)
-- [ ] **S11** Frontend scaffold
+- [ ] **S11** Frontend scaffold _(split — see log)_
+  - [x] **S11.1** Scaffold + app shell + API client (Vite/React/TS/Tailwind/Vitest)
+  - [ ] **S11.2** Dashboard screen (stat cards + monitor card grid)
+  - [ ] **S11.3** Add-monitor screen (cURL / import / manual + monitoring rules)
+  - [ ] **S11.4** Monitor detail shell + auth-source manage UI
 - [ ] **S12** Frontend charts + live
 - [ ] **S13** Containerize & deploy
 - [ ] **S14** Hardening
@@ -286,6 +319,60 @@ notifiers open a short-lived `httpx.AsyncClient` per send (no shared pooled clie
 > Commit(s): <conventional commit subject lines>
 > Resume hint: <the very next concrete step>
 > ```
+
+### S11.1 — Frontend scaffold + app shell + API client  · 2026-07-17
+Done: `frontend/` exists and boots (PLAN §2 stack): pnpm + Vite 6 + React 18 +
+TypeScript strict + Tailwind v4 (`@tailwindcss/vite`) + TanStack Query + React
+Router 7; Vitest 3 + Testing Library (jsdom) with tests in `frontend/tests/`.
+**S11 split** into S11.1 (this), S11.2 (dashboard), S11.3 (add-monitor), S11.4
+(detail shell + auth-source UI). Design tokens from `docs/design/README.md`
+committed as Tailwind `@theme` variables (`src/index.css`: text/surface/border/
+accent/status palette, Hanken Grotesk + JetBrains Mono via Google Fonts,
+`sntIn`/`sntPulse` keyframes, `.snt-field` focus ring). App shell (`Layout.tsx`):
+240px `#fafafa` sidebar — brand tile + wordmark, **Monitors** nav (active style
+per design; the design's Incidents/Alerts/Status-pages items are v1 out-of-scope
+per SPEC §8 and deliberately omitted rather than rendered dead), static
+Workspace/Self-hosted account card — and a scrolling white main pane. Routes:
+`/` → redirect `/monitors` (dashboard placeholder: h1 + pulsing live indicator +
+black Add-monitor button) and `/monitors/new` (back link + "Add a monitor"
+heading + design sub-copy); real screens land in S11.2/S11.3. Typed API client
+(`src/lib/api.ts` + `src/lib/config.ts`): `api.get/post/patch/delete` over
+fetch; base URL `VITE_API_BASE_URL` default `/api/v1`, resolved absolute against
+the page origin (works same-origin, in tests, and with an absolute URL); sends
+the **S9a `Authorization: Bearer`** header on every call when a token exists —
+localStorage `sentinel.auth_token` first, `VITE_AUTH_TOKEN` dev-only fallback
+(`.env.example` warns Vite env is public); SPEC §5 envelope → typed `ApiError`
+(status/code/message/details), non-envelope error bodies → `http_<status>`,
+204-safe. Vite dev server proxies `/api` → `http://localhost:8000` (no CORS).
+justfile: +`front-build`; existing `front-test`/`front-dev` now work.
+Tests: `frontend/tests/api.test.ts` (9 — Bearer attached / absent without a
+token / persisted; base-path prefix + JSON parse; POST content-type + body;
+204 DELETE; envelope→ApiError incl. 401 `unauthorized`; non-envelope fallback)
++ `frontend/tests/app.test.tsx` (4 — sidebar brand/nav, dashboard at
+`/monitors` with Add-monitor action, `/` redirect, add-monitor screen at
+`/monitors/new`). `pnpm test` → **13 passed**. `pnpm build` (tsc strict + vite)
+clean. Backend untouched: `just test` 495/50, `just lint` + `just types` clean.
+Boot smoke: uvicorn + `pnpm dev` → `curl localhost:5173/api/v1/health` through
+the proxy returns `{"status":"ok"}`; SPA index serves.
+Decisions: **D32** (S11 split; token from localStorage with Vite-env dev
+fallback; ApiError envelope mapping in one fetch wrapper; Tailwind v4 `@theme`
+tokens as the design-token home; out-of-scope nav omitted; frontend tests live
+in `frontend/tests/` mirroring PLAN §3) added to PLAN §7.
+Files: `frontend/{package.json,vite.config.ts,tsconfig.json,index.html,
+.env.example,.gitignore}`, `frontend/src/{main.tsx,App.tsx,index.css}`,
+`frontend/src/lib/{api.ts,config.ts}`, `frontend/src/components/{Layout.tsx,
+icons.tsx}`, `frontend/src/pages/{DashboardPage.tsx,AddMonitorPage.tsx}`,
+`frontend/tests/{setup.ts,api.test.ts,app.test.tsx}`, `justfile`
+(+`front-build`).
+Follow-ups / parked: auth-token settings UI (no way to enter the token in the
+app yet); frontend CI job; ESLint/Prettier; self-hosted fonts (S13); responsive
+sidebar collapse; `pnpm-lock.yaml` committed for reproducibility.
+Commit(s): `feat(frontend): scaffold Vite/React/TS/Tailwind SPA — app shell +
+authed API client (S11.1)`.
+Resume hint: start S11.2 — first check the real shape of
+`GET /api/v1/monitors` + the S7.3 summary include in `interface/api/`, then
+write failing component tests for the stat cards + monitor card grid (mock the
+api module), then build the dashboard per `docs/design/README.md` Screen 1.
 
 ### S10.2 — Retention pruning (finishes S10)  · 2026-07-16
 Done: History is pruned on a schedule (SPEC §6 retention). The three history repos —

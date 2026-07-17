@@ -1,0 +1,84 @@
+@import "tailwindcss";
+
+/* Design tokens — docs/design/README.md ("Design Tokens"). */
+@theme {
+  --font-sans: "Hanken Grotesk", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+
+  /* Text */
+  --color-ink: #18181b;
+  --color-body: #52525b;
+  --color-dim: #71717a;
+  --color-muted: #a1a1aa;
+  --color-faint: #d4d4d8;
+
+  /* Surfaces & borders */
+  --color-subtle: #fafafa;
+  --color-fill: #f4f4f5;
+  --color-line: #ededed;
+  --color-edge: #ececec;
+  --color-hairline: #e4e4e7;
+
+  /* Accent (indigo) */
+  --color-accent: #4f46e5;
+  --color-accent-tint: #eef2ff;
+  --color-accent-wash: #f5f3ff;
+  --color-accent-focus: #a5b4fc;
+
+  /* Status */
+  --color-up: #22c55e;
+  --color-up-text: #15803d;
+  --color-up-bg: #f0fdf4;
+  --color-degraded: #f59e0b;
+  --color-degraded-text: #b45309;
+  --color-degraded-bg: #fffbeb;
+  --color-down: #ef4444;
+  --color-down-text: #b91c1c;
+  --color-down-bg: #fef2f2;
+}
+
+body {
+  font-family: var(--font-sans);
+  font-size: 14px;
+  color: var(--color-ink);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Shared focus state for inputs/selects/textareas (design "Field focus state"). */
+.snt-field:focus {
+  outline: none;
+  border-color: var(--color-accent-focus);
+  box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.12);
+}
+
+@keyframes sntPulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.45);
+  }
+  70% {
+    box-shadow: 0 0 0 6px rgba(34, 197, 94, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(34, 197, 94, 0);
+  }
+}
+
+@keyframes sntIn {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.snt-in {
+  animation: sntIn 0.35s ease;
+}
+
+.snt-pulse {
+  animation: sntPulse 2.2s infinite;
+}

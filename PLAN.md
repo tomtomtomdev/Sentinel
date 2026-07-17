@@ -803,6 +803,23 @@ stable (after S7), against a mock server if needed.
   doesn't prune). SPEC's optional per-monitor row cap ("and/or") is parked —
   age-only in v1.
 
+- **D32 — S11 split S11.1–S11.4; frontend scaffold conventions.** S11 (whole SPA)
+  is several days of work, so: S11.1 scaffold + app shell + API client, S11.2
+  dashboard, S11.3 add-monitor, S11.4 detail shell + auth-source UI. Conventions
+  fixed in S11.1: **auth token** read from localStorage (`sentinel.auth_token`)
+  with a `VITE_AUTH_TOKEN` env fallback for dev only — Vite env is baked into the
+  public bundle, so a deployed build must use the localStorage path (a settings
+  surface is a follow-up); one fetch wrapper (`src/lib/api.ts`) owns the S9a
+  Bearer header and maps the SPEC §5 error envelope to a typed `ApiError`
+  (non-envelope bodies → `http_<status>`), with the base URL resolved absolute
+  against the page origin so a relative `/api/v1` works same-origin, under the
+  dev proxy (`/api` → `localhost:8000`), and in jsdom tests. **Design tokens**
+  live as Tailwind v4 `@theme` variables in `src/index.css` (single source for
+  the docs/design palette/fonts). The design's Incidents/Alerts/Status-pages nav
+  is **omitted** (v1 out-of-scope per SPEC §8) instead of rendered dead. Frontend
+  tests live in `frontend/tests/` (PLAN §3 layout) on Vitest + Testing Library;
+  React pinned to 18 per §2.
+
 _Append new decisions here as `Dn — <decision>: <why>` when slices force a choice._
 
 ---
