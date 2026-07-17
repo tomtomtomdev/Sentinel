@@ -3,7 +3,7 @@ import { formatLatency, formatUptime, stripProtocol, timeAgo } from "../lib/form
 
 /** Backend statuses mapped to the design's palette. The design's "Degraded"
  * slot renders the backend's `unknown` (no degraded status exists in v1). */
-const STATUS = {
+export const STATUS = {
   up: { label: "Operational", dot: "bg-up", pill: "text-up-text bg-up-bg", metric: "text-up-text" },
   down: { label: "Down", dot: "bg-down", pill: "text-down-text bg-down-bg", metric: "text-down-text" },
   unknown: {
@@ -21,6 +21,17 @@ const METHOD_CHIP: Record<string, string> = {
   PATCH: "text-[#6d28d9] bg-[#ede9fe]",
   DELETE: "text-[#b91c1c] bg-[#fee2e2]",
 };
+
+export function StatusPill({ status }: { status: MonitorStatus }) {
+  const s = STATUS[status];
+  return (
+    <span
+      className={`shrink-0 rounded-[20px] px-[9px] py-[3px] text-[11px] font-semibold ${s.pill}`}
+    >
+      {s.label}
+    </span>
+  );
+}
 
 export function MethodChip({ method }: { method: string }) {
   const colors = METHOD_CHIP[method] ?? "text-body bg-fill";

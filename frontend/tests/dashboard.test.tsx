@@ -95,6 +95,10 @@ describe("dashboard", () => {
     renderDashboard();
 
     const upCard = (await screen.findByText("Prod health")).closest("article")!;
+    expect(upCard.closest("a")).toHaveAttribute(
+      "href",
+      "/monitors/00000000-0000-0000-0000-000000000001",
+    );
     expect(within(upCard).getByText("Operational")).toBeInTheDocument();
     expect(within(upCard).getByText("GET")).toBeInTheDocument();
     expect(within(upCard).getByText("api.acme.io/v1/health")).toBeInTheDocument();

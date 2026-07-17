@@ -20,7 +20,23 @@
 
 ## Current state
 
-- **Phase:** **S11 in progress — S11.3 complete (add-monitor screen).** The
+- **Phase:** **S11 COMPLETE (S11.4 — monitor detail shell + auth-source UI).**
+  New routes: `/monitors/:id` — detail shell (name + live status pill from
+  `GET /monitors/{id}/stats?window=24h`, method chip + URL, 24h stats strip
+  [uptime/checks/failures/p50/p95/p99], config summary [interval/timeout/
+  assertion count/enabled], **auth-source link select** → `PATCH auth_source_id`
+  (None = unlink), two-step delete → `DELETE` + back to dashboard; chart/runs
+  panel is an S12 placeholder) and `/auth-sources` — new sidebar nav (key icon):
+  list with token-state pill (valid/expired/error/none), expiry time,
+  `last_refresh_error`, per-source **Refresh** (`POST /auth-sources/{id}/
+  refresh` → toast), Enable/Disable (`PATCH enabled`), Delete; create form for
+  **custom mode** (name, login method/URL/body [JSON body auto-gets
+  Content-Type], `json_path` token extractor, optional `json_path_seconds`
+  expiry, header injection defaulting `Authorization` + `{token_type} {token}`).
+  Dashboard cards now **link to the detail page**. No token value is ever
+  displayed anywhere (the API never returns one — verified `body: "••••"` on
+  the wire). OAuth2 modes + full-field edit are API-only for now (parked).
+- **Prior phase:** **S11.3 complete (add-monitor screen).** The
   add-monitor flow works end to end (`docs/design/` Screen 2): segmented tabs —
   **Paste cURL** (textarea + example filler → `POST /imports/curl` → detected-
   request preview: method chip, URL, headers, body pre → Create), **Import
@@ -258,17 +274,16 @@
 
 ## Next action
 
-➡️ **Begin S11.4 — monitor detail shell + auth-source manage UI** (finishes
-S11): (a) monitor detail route `/monitors/:id` — name, status pill, stats
-summary (`GET /monitors/{id}` + `GET /monitors/{id}/stats?window=24h`), make
-dashboard cards navigate to it (design: cards are `cursor:pointer`); charts +
-recent-runs table land in S12, keep it a shell. (b) Auth-source management —
-list/create/edit/delete + manual refresh (`/api/v1/auth-sources` routes from
-S5b.3; check `auth_sources.py` for exact DTOs; token_state summary shown, no
-token value ever) and linking a monitor to a source (`auth_source_id` on
-create/patch — a select in the add-monitor manual tab + detail page). No
-design mockup exists for auth sources (not in `docs/design/`) — follow the
-existing token/layout conventions. Component tests per screen.
+➡️ **Begin S12 — frontend charts + live** (PLAN §5): latency chart (Recharts —
+add the dep) + recent-runs table on the detail page (`GET /monitors/{id}/
+results`), the dashboard **26-bar sparkline** parked from S11.2 (per-monitor
+recent results — consider a batch include or accept N+1 with query caching),
+and **live updates via `EventSource`** on `GET /api/v1/events`
+(`check_completed` → invalidate/patch monitor summaries + append to the runs
+table; `status_changed` → status flip; note: EventSource can't set an
+Authorization header — the S9a gate on `/events` needs a token query-param or
+fetch-based SSE reader; decide and, if backend changes are needed, spec them
+first). Component tests with a fake EventSource.
 
 **Parked follow-ups from S11.1** (not blockers): the auth token has no settings
 UI yet (localStorage/`VITE_AUTH_TOKEN` only — add an entry surface when a 401 is
@@ -332,11 +347,11 @@ notifiers open a short-lived `httpx.AsyncClient` per send (no shared pooled clie
 - [x] **S10** SSRF guard + retention _(split — S10.1 guard / S10.2 retention)_
   - [x] **S10.1** SSRF guard (probe + auth-source login + webhook notifier)
   - [x] **S10.2** Retention pruning (raw results + state transitions + rollups)
-- [ ] **S11** Frontend scaffold _(split — see log)_
+- [x] **S11** Frontend scaffold _(split — see log)_
   - [x] **S11.1** Scaffold + app shell + API client (Vite/React/TS/Tailwind/Vitest)
   - [x] **S11.2** Dashboard screen (stat cards + monitor card grid)
   - [x] **S11.3** Add-monitor screen (cURL / import / manual + monitoring rules)
-  - [ ] **S11.4** Monitor detail shell + auth-source manage UI
+  - [x] **S11.4** Monitor detail shell + auth-source manage UI
 - [ ] **S12** Frontend charts + live
 - [ ] **S13** Containerize & deploy
 - [ ] **S14** Hardening
@@ -357,6 +372,67 @@ notifiers open a short-lived `httpx.AsyncClient` per send (no shared pooled clie
 > Commit(s): <conventional commit subject lines>
 > Resume hint: <the very next concrete step>
 > ```
+
+### S11.4 — Monitor detail shell + auth-source manage UI (finishes S11)  · 2026-07-17
+Done: The last two S11 surfaces. **Monitor detail** (`/monitors/:id`,
+`MonitorDetailPage`): back link, name + status pill (from the 24h stats),
+method chip + stripped URL, stats strip (uptime / checks / failures /
+p50/p95/p99 via `useMonitorStats`), config summary (interval, timeout,
+assertion count, enabled), **auth-source select** (options from
+`GET /auth-sources`; change → `PATCH /monitors/{id} {auth_source_id}`, "" →
+`null` unlink, toast), **two-step delete** (Delete monitor → Confirm delete →
+`DELETE` → navigate back with a "Monitor deleted" toast), and an S12
+placeholder panel for chart + runs. Dashboard cards are now wrapped in a
+`<Link to=/monitors/{id}>` (design: clickable cards). **Auth sources**
+(`/auth-sources`, `AuthSourcesPage`, new sidebar nav item with a key icon —
+no mockup in `docs/design/`, follows the existing tokens): list rows show
+name, mode chip, enabled state, **token-state pill**
+(valid=green/expired=amber/error=red/none=gray), expiry clock time, and
+`last_refresh_error`; actions per row — **Refresh** (`POST
+/auth-sources/{id}/refresh`, toast "Token refreshed" or "Refresh failed —
+token is {status}"), **Enable/Disable** (`PATCH {enabled}`), **Delete**.
+Create form (custom mode): name (URL fallback), login method/URL/body (a
+JSON-looking body auto-adds `Content-Type: application/json`), token path
+(`json_path` extractor, default `$.access_token`), optional expires-in path
+(`json_path_seconds`), inject-into-header name (default `Authorization`,
+template `{token_type} {token}`). **No token value is ever rendered** —
+`token_state` is metadata-only by API design (verified on the wire:
+credentials echo as `••••`, `token_state` carries status/timestamps only).
+Types + hooks in `src/lib/authSources.ts` and `monitors.ts`
+(`useMonitor`/`useMonitorStats`, `MonitorDetail`/`MonitorStats`).
+Tests: `tests/monitor-detail.test.tsx` (3 — identity + stats + config render
+and the stats query hits `?window=24h`; auth-source select PATCHes the right
+body; two-step delete calls `DELETE` and returns to the dashboard),
+`tests/auth-sources.test.tsx` (4 — list with token pills + refresh error
+shown; manual refresh posts + toasts; create posts the exact SPEC §5 payload
+[custom mode, json_path extractor, header injection]; disable PATCHes +
+delete DELETEs), `dashboard.test.tsx` +assert card href, `app.test.tsx` +nav
+item + `/auth-sources` route render. `pnpm test` → **47 passed**; `pnpm
+build` clean; backend gate 495/50 + ruff + mypy clean. Real-wire smoke:
+created an auth source through the Vite proxy (response redacts the body,
+`token_state: null` pre-refresh), fetched `stats?window=24h` for a fresh
+monitor (unknown/0 checks shape), deleted both.
+Decisions: none new (D32 stands; OAuth-modes-UI + full-field-edit parked
+below).
+Files: `frontend/src/lib/authSources.ts` (new), `frontend/src/lib/monitors.ts`
+(+detail/stats types + hooks), `frontend/src/pages/{MonitorDetailPage,
+AuthSourcesPage}.tsx` (new), `frontend/src/App.tsx` (+2 routes),
+`frontend/src/components/{Layout.tsx,icons.tsx,MonitorCard.tsx}` (nav item +
+KeyIcon; exported `STATUS`/`StatusPill`), `frontend/src/pages/
+DashboardPage.tsx` (card → Link), `frontend/tests/{monitor-detail,
+auth-sources}.test.tsx` (new) + `dashboard`/`app` test additions.
+Follow-ups / parked: OAuth2 modes (client-credentials/password/refresh) and
+full-field auth-source **edit** are API-only (UI is create/toggle/refresh/
+delete); the detail page doesn't edit monitor fields beyond `auth_source_id`
+(name/url/interval edit UI parked); add-monitor manual tab has no auth-source
+select yet (link from the detail page instead); auth-source create form
+doesn't expose custom headers/query params or `refresh_on_status`.
+Commit(s): `feat(frontend): monitor detail shell + auth-source manage UI —
+S11 complete (S11.4)`.
+Resume hint: start S12 — decide the SSE auth mechanism first (EventSource
+can't send Authorization; likely a `?token=` query param accepted by the S9a
+gate — spec it in SPEC §5 before coding), then failing tests for the latency
+chart + runs table + sparkline + live invalidation.
 
 ### S11.3 — Add-monitor screen (cURL / import / manual + rules)  · 2026-07-17
 Done: A monitor can be created from the UI three ways (design Screen 2, SPEC

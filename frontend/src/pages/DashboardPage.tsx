@@ -168,12 +168,13 @@ export function DashboardPage() {
           ) : (
             <div className="grid grid-cols-[repeat(auto-fill,minmax(300px,1fr))] gap-[14px]">
               {filtered.map((m) => (
-                <MonitorCard
-                  key={m.id}
-                  monitor={m}
-                  now={now}
-                  isNew={newIds.includes(m.id)}
-                />
+                <Link key={m.id} to={`/monitors/${m.id}`} className="block">
+                  <MonitorCard
+                    monitor={m}
+                    now={now}
+                    isNew={newIds.includes(m.id)}
+                  />
+                </Link>
               ))}
             </div>
           )}

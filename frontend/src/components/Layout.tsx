@@ -1,7 +1,14 @@
 import type { ReactNode } from "react";
 import { NavLink } from "react-router-dom";
 
-import { ActivityIcon, ShieldCheckIcon } from "./icons";
+import { ActivityIcon, KeyIcon, ShieldCheckIcon } from "./icons";
+
+const NAV_ITEM = ({ isActive }: { isActive: boolean }) =>
+  `flex items-center gap-[10px] rounded-[8px] px-[10px] py-2 text-[13px] ${
+    isActive
+      ? "border border-edge bg-white font-semibold text-ink shadow-[0_1px_2px_rgba(0,0,0,0.03)]"
+      : "font-medium text-dim hover:bg-[#f2f2f3] hover:text-[#3f3f46]"
+  }`;
 
 function Sidebar() {
   return (
@@ -15,18 +22,13 @@ function Sidebar() {
         </span>
       </div>
       <nav className="flex flex-col gap-[2px]">
-        <NavLink
-          to="/monitors"
-          className={({ isActive }) =>
-            `flex items-center gap-[10px] rounded-[8px] px-[10px] py-2 text-[13px] ${
-              isActive
-                ? "border border-edge bg-white font-semibold text-ink shadow-[0_1px_2px_rgba(0,0,0,0.03)]"
-                : "font-medium text-dim hover:bg-[#f2f2f3] hover:text-[#3f3f46]"
-            }`
-          }
-        >
+        <NavLink to="/monitors" className={NAV_ITEM}>
           <ActivityIcon size={16} />
           Monitors
+        </NavLink>
+        <NavLink to="/auth-sources" className={NAV_ITEM}>
+          <KeyIcon size={16} />
+          Auth sources
         </NavLink>
       </nav>
       <div className="mt-auto flex items-center gap-[10px] border-t border-line p-2 pt-[14px]">

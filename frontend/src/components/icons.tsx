@@ -70,6 +70,14 @@ export const ArrowLeftIcon = icon(
 
 export const CheckIcon = icon(<path d="M20 6 9 17l-5-5" />);
 
+export const KeyIcon = icon(
+  <>
+    <path d="m15.5 7.5 2.3 2.3a1 1 0 0 0 1.4 0l2.1-2.1a1 1 0 0 0 0-1.4L19 4" />
+    <path d="m21 2-9.6 9.6" />
+    <circle cx={7.5} cy={15.5} r={5.5} />
+  </>,
+);
+
 export const XIcon = icon(
   <>
     <path d="M18 6 6 18" />

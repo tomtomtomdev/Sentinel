@@ -32,7 +32,20 @@ describe("app shell", () => {
     renderAt("/monitors");
 
     expect(screen.getByText("Sentinel")).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: /monitors/i })).toBeInTheDocument();
+    expect(
+      screen.getByRole("link", { name: /^monitors$/i }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("link", { name: /auth sources/i }),
+    ).toBeInTheDocument();
+  });
+
+  it("renders the auth-sources screen at /auth-sources", async () => {
+    renderAt("/auth-sources");
+
+    expect(
+      await screen.findByRole("heading", { level: 1, name: "Auth sources" }),
+    ).toBeInTheDocument();
   });
 
   it("renders the dashboard at /monitors with an Add monitor action", () => {
