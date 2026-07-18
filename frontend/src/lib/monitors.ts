@@ -59,6 +59,30 @@ export interface MonitorStats {
   since: string | null;
 }
 
+export interface CheckResult {
+  id: string;
+  monitor_id: string;
+  started_at: string;
+  finished_at: string;
+  status_code: number | null;
+  latency_ms: number | null;
+  response_size_bytes: number | null;
+  cert_expires_at: string | null;
+  success: boolean;
+  error: string | null;
+  assertion_results: { assertion: unknown; passed: boolean }[];
+}
+
+/** Newest-first check history (SPEC §3.5) — feeds the latency chart, the runs
+ * table, and the dashboard sparkline. */
+export function useMonitorResults(id: string, limit: number) {
+  return useQuery({
+    queryKey: ["monitors", id, "results", { limit }],
+    queryFn: ({ signal }) =>
+      api.get<CheckResult[]>(`/monitors/${id}/results?limit=${limit}`, signal),
+  });
+}
+
 export function useMonitor(id: string) {
   return useQuery({
     queryKey: ["monitors", id],

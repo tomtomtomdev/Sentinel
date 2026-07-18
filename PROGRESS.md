@@ -20,7 +20,23 @@
 
 ## Current state
 
-- **Phase:** **S11 COMPLETE (S11.4 — monitor detail shell + auth-source UI).**
+- **Phase:** **S12 IN PROGRESS — S12.1 complete (detail latency chart + recent
+  runs table).** S12 split: S12.1 (this) / S12.2 (dashboard 26-bar sparkline) /
+  S12.3 (live updates via SSE). `/monitors/:id` now renders real check history
+  from `GET /monitors/{id}/results?limit=50` — **one query feeds both panels**
+  (new `useMonitorResults` hook + `CheckResult` type in `src/lib/monitors.ts`):
+  a **Recharts** line chart (new dep, recharts 3.9) of `latency_ms` over
+  `finished_at` (oldest→newest left-to-right, gaps where latency is null,
+  animation off), and a newest-first **Recent runs** table (clock time,
+  OK/Failed pill, status code, latency, error kind; nulls → "—"). Loading /
+  error / empty ("No checks recorded yet") states replace the S11.4
+  placeholder panel (`components/CheckHistory.tsx`). Frontend suite now **50
+  passed**. **SSE auth decided for S12.3: fetch-based SSE reader** —
+  EventSource can't send an Authorization header, so the client will consume
+  `GET /events` via `fetch` + stream parsing with the normal Bearer header.
+  **No backend change; no token ever appears in a URL/access log** (record as
+  D33 with the S12.3 implementation).
+- **Prior phase:** **S11 COMPLETE (S11.4 — monitor detail shell + auth-source UI).**
   New routes: `/monitors/:id` — detail shell (name + live status pill from
   `GET /monitors/{id}/stats?window=24h`, method chip + URL, 24h stats strip
   [uptime/checks/failures/p50/p95/p99], config summary [interval/timeout/
@@ -202,8 +218,8 @@
   `MonitorState` advances via `advance_state`; §3.5 read endpoints via `StatsService`;
   hourly `CheckRollup`s back 7d/30d; `GET /events` streams `check_completed`/
   `status_changed`. S5b (auth source) + S6 (scheduler + heartbeat) complete beneath.
-- **Last green commit:** S10.1 (`feat(security): SSRF guard — resolve-then-validate
-  every outbound user-supplied URL (S10.1)`); S10.2 staged.
+- **Last green commit:** S11.4 (`feat(frontend): monitor detail shell +
+  auth-source manage UI — S11 complete (S11.4)`); S12.1 staged.
 - **Test suite:** `just test` (no DB) → **495 passed, 50 skipped** (+12 from S10.2).
   With `TEST_DATABASE_URL=…/sentinel_test` → **545 passed** (no skips). S10.2 added:
   `tests/unit/application/test_retention_service.py` (6 — per-store cutoffs + report
@@ -274,16 +290,15 @@
 
 ## Next action
 
-➡️ **Begin S12 — frontend charts + live** (PLAN §5): latency chart (Recharts —
-add the dep) + recent-runs table on the detail page (`GET /monitors/{id}/
-results`), the dashboard **26-bar sparkline** parked from S11.2 (per-monitor
-recent results — consider a batch include or accept N+1 with query caching),
-and **live updates via `EventSource`** on `GET /api/v1/events`
-(`check_completed` → invalidate/patch monitor summaries + append to the runs
-table; `status_changed` → status flip; note: EventSource can't set an
-Authorization header — the S9a gate on `/events` needs a token query-param or
-fetch-based SSE reader; decide and, if backend changes are needed, spec them
-first). Component tests with a fake EventSource.
+➡️ **S12.2 — dashboard 26-bar sparkline** (design §Screen 1: 26 bars, flex row,
+heights 4–16px, green/red per check result — no degraded in v1): per-monitor
+`GET /monitors/{id}/results?limit=26` from within `MonitorCard` (accepted N+1
+with TanStack Query caching; reuse `useMonitorResults`), oldest→newest bars,
+height scaled by latency. Then **S12.3 — live updates**: fetch-based SSE
+reader for `GET /api/v1/events` (decision made — Bearer header via fetch, no
+backend change; record D33 in PLAN §7), `check_completed`/`status_changed` →
+invalidate the touched monitor's queries + the list query. Component tests
+with a scripted stream.
 
 **Parked follow-ups from S11.1** (not blockers): the auth token has no settings
 UI yet (localStorage/`VITE_AUTH_TOKEN` only — add an entry surface when a 401 is
@@ -372,6 +387,43 @@ notifiers open a short-lived `httpx.AsyncClient` per send (no shared pooled clie
 > Commit(s): <conventional commit subject lines>
 > Resume hint: <the very next concrete step>
 > ```
+
+### S12.1 — Detail-page latency chart + recent runs table  · 2026-07-18
+Done: The S11.4 placeholder panel on `/monitors/:id` is real (PLAN §5 S12; S12
+split S12.1/S12.2/S12.3 recorded above). One `GET /monitors/{id}/results?
+limit=50` query (new `useMonitorResults(id, limit)` + `CheckResult` type,
+queryKey `["monitors", id, "results", {limit}]`) feeds two panels in the new
+`components/CheckHistory.tsx`: **Latency** — Recharts `LineChart` (dep added:
+recharts 3.9) of `latency_ms` by `finished_at` clock time, reversed to
+oldest→newest, `connectNulls=false` so failed checks with no latency show as
+gaps, animation off (stable under jsdom); **Recent runs** — newest-first table
+(as the API returns): clock time (mono), OK/Failed pill (up/down palette),
+status code, latency via `formatLatency`, error kind in red mono; nulls render
+"—". Distinct loading / error / "No checks recorded yet" empty states (chart +
+table hidden when empty).
+Tests: `tests/monitor-detail.test.tsx` +3 (runs table renders all rows
+newest-first from the stubbed endpoint — asserts the exact
+`?limit=50` query, the timeout row [Failed/—/timeout], the assertion-failure
+row [500/812ms/assertion], and the OK row [200/142ms]; latency-chart region
+present when results exist; empty results → empty state and neither panel).
+`pnpm test` → **50 passed**; `pnpm build` (tsc strict) clean. Backend
+untouched: `just test` 495/50 green at baseline.
+Decisions: SSE auth for S12.3 **decided** — fetch-based SSE reader with the
+normal Bearer header (no backend change, no token in URLs); D33 lands in PLAN
+§7 with the S12.3 implementation.
+Files: `frontend/src/components/CheckHistory.tsx` (new),
+`frontend/src/lib/monitors.ts` (+`CheckResult`, `useMonitorResults`),
+`frontend/src/pages/MonitorDetailPage.tsx` (placeholder → `CheckHistoryPanel`),
+`frontend/package.json` (+recharts), `frontend/tests/monitor-detail.test.tsx`.
+Follow-ups / parked: recharts pushes the main bundle past Vite's 500 kB chunk
+warning — code-split (lazy route or manualChunks) at S13 if it matters; the
+chart covers the last 50 checks only (no window selector / pagination on the
+runs table).
+Commit(s): `feat(frontend): detail-page latency chart + recent runs table
+(S12.1)`.
+Resume hint: start S12.2 — failing dashboard test first: each card fetches
+`results?limit=26` and renders 26 bars colored by `success`; reuse
+`useMonitorResults` inside `MonitorCard` (accepted N+1 + query cache).
 
 ### S11.4 — Monitor detail shell + auth-source manage UI (finishes S11)  · 2026-07-17
 Done: The last two S11 surfaces. **Monitor detail** (`/monitors/:id`,

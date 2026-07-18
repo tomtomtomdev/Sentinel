@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
 
+import { CheckHistoryPanel } from "../components/CheckHistory";
 import { MethodChip, StatusPill } from "../components/MonitorCard";
 import { Toast, useToast } from "../components/Toast";
 import { ArrowLeftIcon } from "../components/icons";
@@ -144,9 +145,7 @@ export function MonitorDetailPage() {
             </p>
           </div>
 
-          <div className="mt-4 rounded-[14px] border border-edge px-[18px] py-10 text-center text-[13px] text-dim">
-            Latency chart and recent runs land in the next slice (S12).
-          </div>
+          <CheckHistoryPanel monitorId={id} />
 
           <div className="mt-6 flex justify-end gap-2">
             {confirmingDelete ? (
