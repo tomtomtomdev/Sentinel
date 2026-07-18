@@ -2,6 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 
 import { Layout } from "./components/Layout";
+import { useLiveEvents } from "./lib/live";
 import { AddMonitorPage } from "./pages/AddMonitorPage";
 import { AuthSourcesPage } from "./pages/AuthSourcesPage";
 import { DashboardPage } from "./pages/DashboardPage";
@@ -9,6 +10,7 @@ import { MonitorDetailPage } from "./pages/MonitorDetailPage";
 
 /** Route table without providers — tests mount this inside a MemoryRouter. */
 export function AppRoutes() {
+  useLiveEvents();
   return (
     <Layout>
       <Routes>

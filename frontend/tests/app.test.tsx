@@ -3,6 +3,9 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
 
 import { AppRoutes } from "../src/App";
+import { useLiveEvents } from "../src/lib/live";
+
+vi.mock("../src/lib/live", () => ({ useLiveEvents: vi.fn() }));
 
 vi.mock("../src/lib/api", () => ({
   api: {
@@ -28,6 +31,12 @@ function renderAt(path: string) {
 }
 
 describe("app shell", () => {
+  it("starts the live event subscription (S12.3)", () => {
+    renderAt("/monitors");
+
+    expect(vi.mocked(useLiveEvents)).toHaveBeenCalled();
+  });
+
   it("shows the Sentinel brand and Monitors nav in the sidebar", () => {
     renderAt("/monitors");
 

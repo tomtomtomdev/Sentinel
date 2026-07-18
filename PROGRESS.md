@@ -20,9 +20,23 @@
 
 ## Current state
 
-- **Phase:** **S12 IN PROGRESS — S12.2 complete (dashboard sparkline; S12.1
-  chart + runs table beneath).** S12 split: S12.1 / S12.2 (this) / S12.3 (live
-  updates via SSE — the remaining piece). Each data-bearing monitor card now
+- **Phase:** **S12 COMPLETE (S12.3 — live updates; split S12.1 chart+runs /
+  S12.2 sparkline / S12.3 live).** The dashboard and detail pages now update
+  live without polling: `src/lib/sse.ts` reads the S9a-gated
+  `GET /api/v1/events` with a **fetch-based SSE reader** (D33 — `EventSource`
+  can't send Authorization; the reader carries the normal Bearer header, so
+  **no token in URLs and zero backend change**): incremental `event:`/`data:`
+  parser (`createSseParser`, handles frames split across chunks), typed
+  `LiveEvent` union, unknown events/malformed JSON dropped, reconnect with
+  doubling backoff (3s→30s cap, reset after a healthy connection),
+  `subscribeEvents` → unsubscribe on abort. `useLiveEvents` (`src/lib/live.ts`,
+  mounted once in `AppRoutes`) maps **both** event kinds to two invalidations:
+  the list-summary query + the `["monitors", <id>]` prefix — so stat cards,
+  monitor cards, sparklines, detail stats, the latency chart, and the runs
+  table all refetch on `check_completed`/`status_changed`. Frontend suite **63
+  passed**. Real-wire smoke: booted the API with `AUTH_TOKEN`, opened the
+  gated stream with a Bearer curl, ran a manual check → `check_completed` +
+  `status_changed` frames arrived in exactly the shape the parser consumes. Each data-bearing monitor card now
   draws the design's **26-bar sparkline** (`Sparkline` in `MonitorCard.tsx`):
   per-monitor `GET /monitors/{id}/results?limit=26` via the shared
   `useMonitorResults` hook (accepted N+1 — TanStack Query caches per key;
@@ -228,8 +242,8 @@
   `MonitorState` advances via `advance_state`; §3.5 read endpoints via `StatsService`;
   hourly `CheckRollup`s back 7d/30d; `GET /events` streams `check_completed`/
   `status_changed`. S5b (auth source) + S6 (scheduler + heartbeat) complete beneath.
-- **Last green commit:** S11.4 (`feat(frontend): monitor detail shell +
-  auth-source manage UI — S11 complete (S11.4)`); S12.1 staged.
+- **Last green commit:** S12.2 (`feat(frontend): dashboard 26-bar sparkline per
+  monitor card (S12.2)`); S12.3 staged.
 - **Test suite:** `just test` (no DB) → **495 passed, 50 skipped** (+12 from S10.2).
   With `TEST_DATABASE_URL=…/sentinel_test` → **545 passed** (no skips). S10.2 added:
   `tests/unit/application/test_retention_service.py` (6 — per-store cutoffs + report
@@ -300,13 +314,13 @@
 
 ## Next action
 
-➡️ **S12.3 — live updates** (finishes S12): fetch-based SSE reader for
-`GET /api/v1/events` (decision made — Bearer header via fetch + stream parsing,
-no backend change; record **D33** in PLAN §7), a `useLiveEvents` hook mounted
-in the app shell: `check_completed`/`status_changed` → invalidate the touched
-monitor's queries (`["monitors", id]` prefix) + the list query. Reconnect with
-backoff on stream failure. Component tests with a scripted
-ReadableStream/fetch fake. Then tick S12 and update PLAN §7 + this file.
+➡️ **Begin S13 — containerize & deploy** (PLAN §5): multi-stage Dockerfiles
+(backend + frontend build), `docker-compose.yml` (web + worker + postgres, one
+command), Fly.io config with a release migration step, README runbook — **must
+set `AUTH_TOKEN`** (empty = gate open, D29) and `SECRET_KEY`; include the "do
+not expose without the auth gate" warning. Smoke-test the compose stack.
+Consider while in there: self-hosted fonts, frontend CI job, recharts
+code-split (all parked at S11.1/S12.1).
 
 **Parked follow-ups from S11.1** (not blockers): the auth token has no settings
 UI yet (localStorage/`VITE_AUTH_TOKEN` only — add an entry surface when a 401 is
@@ -375,7 +389,10 @@ notifiers open a short-lived `httpx.AsyncClient` per send (no shared pooled clie
   - [x] **S11.2** Dashboard screen (stat cards + monitor card grid)
   - [x] **S11.3** Add-monitor screen (cURL / import / manual + monitoring rules)
   - [x] **S11.4** Monitor detail shell + auth-source manage UI
-- [ ] **S12** Frontend charts + live
+- [x] **S12** Frontend charts + live _(split — see log)_
+  - [x] **S12.1** Detail-page latency chart (Recharts) + recent runs table
+  - [x] **S12.2** Dashboard 26-bar sparkline
+  - [x] **S12.3** Live updates via fetch-based SSE reader (D33)
 - [ ] **S13** Containerize & deploy
 - [ ] **S14** Hardening
 
@@ -395,6 +412,57 @@ notifiers open a short-lived `httpx.AsyncClient` per send (no shared pooled clie
 > Commit(s): <conventional commit subject lines>
 > Resume hint: <the very next concrete step>
 > ```
+
+### S12.3 — Live updates via fetch-based SSE reader (finishes S12)  · 2026-07-18
+Done: Dashboards update without polling (SPEC §3.6). New `src/lib/sse.ts`:
+`createSseParser()` — incremental `event:`/`data:` frame parser (buffers
+partial frames across chunks; matches exactly what `interface/api/events.py`
+emits); `LiveEvent` — typed union of `check_completed` (monitor_id, success,
+status_code, latency_ms, error, at) and `status_changed` (monitor_id,
+from, to, at); `subscribeEvents(onEvent, {retryMs})` — **fetch-based reader**
+(D33: EventSource can't send Authorization; fetch carries the normal S9a
+Bearer header + `Accept: text/event-stream`, so no token ever hits a URL and
+the backend is untouched) that reads `response.body` via
+`getReader()`/`TextDecoder`, drops unknown event names and malformed JSON,
+reconnects on close/failure with doubling backoff (default 3s, ×2 to a 30s
+cap, reset after a healthy connection), and returns an unsubscribe that aborts
+everything. New `src/lib/live.ts`: `useLiveEvents()` — one subscription for
+the app (mounted in `AppRoutes`), each event → invalidate the list-summary
+query (`["monitors", {include:"summary"}]`) + the touched monitor's prefix
+(`["monitors", id]` — detail, stats, results ⇒ chart, runs table, sparkline
+all refetch). Invalidation-not-patching keeps the server authoritative and
+makes missed events self-healing (D33 records the no-`Last-Event-ID`
+trade-off).
+Tests: `tests/sse.test.ts` (7 — parser: complete frame / split-across-chunks /
+multiple-per-chunk; reader over a scripted `ReadableStream` + stubbed global
+fetch: Bearer + Accept headers on the request and typed dispatch of both event
+kinds, unknown-name + malformed-JSON dropped without crashing, reconnect after
+stream close [`retryMs:1`], unsubscribed reader never reconnects),
+`tests/live.test.tsx` (3 — check_completed and status_changed each invalidate
+exactly the two keys; unmount unsubscribes), `tests/app.test.tsx` +1 (shell
+starts the live subscription; live module mocked there so shell tests don't
+open streams). `pnpm test` → **63 passed**; `pnpm build` clean. Backend gate:
+`just test` 495/50, `just lint` + `just types` clean. Real-wire smoke: uvicorn
+with `AUTH_TOKEN` → Bearer-curl on `/api/v1/events` + manual check ⇒
+`check_completed` and `status_changed` frames arrived in the exact parsed
+shape; smoke monitor deleted, server stopped.
+Decisions: **D33** (fetch-based SSE reader; invalidation over patching;
+backoff/no-resume trade-offs) added to PLAN §7.
+Files: `frontend/src/lib/{sse.ts,live.ts}` (new), `frontend/src/App.tsx`
+(`useLiveEvents` in `AppRoutes`), `frontend/tests/{sse.test.ts,live.test.tsx}`
+(new), `frontend/tests/app.test.tsx` (+live wiring test + module mock).
+Follow-ups / parked: no `Last-Event-ID`/resume (backend emits no ids — fine
+under invalidation semantics); invalidations aren't debounced (a rapid event
+burst = one refetch per event; add a small debounce if the monitor count
+grows); the reader has no visible "live/reconnecting" indicator (the header
+dot is static); scheduler-worker events still don't reach the API process
+(S8's parked Redis bus drop-in) — with the compose split in S13 the worker's
+checks won't stream until that lands.
+Commit(s): `feat(frontend): live dashboard updates via authed fetch-SSE
+reader — S12 complete (S12.3)`.
+Resume hint: start S13 — multi-stage Dockerfiles + compose (web/worker/db);
+remember `AUTH_TOKEN` + `SECRET_KEY` must be set in the runbook (D29), and
+note the S8 cross-process event gap in the compose docs.
 
 ### S12.2 — Dashboard 26-bar sparkline  · 2026-07-18
 Done: The sparkline parked at S11.2 (design §Screen 1 item 2: 26 bars, 30px

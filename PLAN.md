@@ -820,6 +820,24 @@ stable (after S7), against a mock server if needed.
   tests live in `frontend/tests/` (PLAN §3 layout) on Vitest + Testing Library;
   React pinned to 18 per §2.
 
+- **D33 — Live events read via a fetch-based SSE reader, not `EventSource`
+  (S12.3).** `EventSource` cannot send an `Authorization` header, so consuming
+  the S9a-gated `GET /api/v1/events` with it would have required accepting the
+  token as a query parameter — putting a credential into URLs, access logs, and
+  browser history (against sentinel-security's redaction posture). Instead the
+  client reads the stream with `fetch` + an incremental SSE parser
+  (`src/lib/sse.ts`), carrying the same Bearer header as every other API call.
+  **Zero backend change** — the S8 endpoint and S9a gate are untouched.
+  Trade-offs accepted: no browser-native auto-reconnect (the reader implements
+  doubling backoff, reset after a healthy connection, capped at 30s) and no
+  `Last-Event-ID` resume (the backend doesn't emit event ids; missed events are
+  tolerable because every event triggers a query **invalidation** — a refetch of
+  authoritative state — rather than a client-side patch, so the next event or
+  refetch self-heals any gap). One app-wide subscription (`useLiveEvents` in
+  `AppRoutes`) maps both event kinds to two invalidations: the monitor-list
+  summary query and the `["monitors", <id>]` prefix (detail + stats + results →
+  chart, runs table, sparkline).
+
 _Append new decisions here as `Dn — <decision>: <why>` when slices force a choice._
 
 ---
