@@ -1,4 +1,4 @@
-import type { MonitorListItem, MonitorStatus } from "../lib/monitors";
+import { useMonitorResults, type MonitorListItem, type MonitorStatus } from "../lib/monitors";
 import { formatLatency, formatUptime, stripProtocol, timeAgo } from "../lib/format";
 
 /** Backend statuses mapped to the design's palette. The design's "Degraded"
@@ -44,6 +44,42 @@ export function MethodChip({ method }: { method: string }) {
   );
 }
 
+/** Design §Screen 1: 26 bars, heights 4–16px in a 30px row, colored by that
+ * check's result (green/red — the design's amber is `degraded`, absent in v1).
+ * Bar height scales with latency relative to the window's max; a failed check
+ * with no latency gets a fixed tall red bar. Oldest→newest, left to right. */
+export const SPARKLINE_BARS = 26;
+
+function Sparkline({ monitorId, enabled }: { monitorId: string; enabled: boolean }) {
+  const { data: results } = useMonitorResults(monitorId, SPARKLINE_BARS, {
+    enabled,
+  });
+  if (!results || results.length === 0) {
+    return null;
+  }
+  const bars = [...results].reverse(); // API is newest-first
+  const max = Math.max(...bars.map((r) => r.latency_ms ?? 0), 1);
+  return (
+    <div
+      data-testid="sparkline"
+      className="mt-[18px] flex h-[30px] items-end gap-[2px]"
+    >
+      {bars.map((r) => (
+        <span
+          key={r.id}
+          className={`min-w-[2px] flex-1 rounded-[1.5px] ${r.success ? "bg-up" : "bg-down"}`}
+          style={{
+            height:
+              r.latency_ms == null
+                ? 14
+                : Math.round(4 + 12 * (r.latency_ms / max)),
+          }}
+        />
+      ))}
+    </div>
+  );
+}
+
 export function MonitorCard({
   monitor,
   now,
@@ -85,6 +121,7 @@ export function MonitorCard({
           {status.label}
         </span>
       </div>
+      <Sparkline monitorId={monitor.id} enabled={hasData} />
       <div className="mt-[14px] flex gap-[22px] border-t border-fill pt-[14px]">
         {hasData && summary ? (
           <>

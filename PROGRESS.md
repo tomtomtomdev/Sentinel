@@ -20,9 +20,19 @@
 
 ## Current state
 
-- **Phase:** **S12 IN PROGRESS — S12.1 complete (detail latency chart + recent
-  runs table).** S12 split: S12.1 (this) / S12.2 (dashboard 26-bar sparkline) /
-  S12.3 (live updates via SSE). `/monitors/:id` now renders real check history
+- **Phase:** **S12 IN PROGRESS — S12.2 complete (dashboard sparkline; S12.1
+  chart + runs table beneath).** S12 split: S12.1 / S12.2 (this) / S12.3 (live
+  updates via SSE — the remaining piece). Each data-bearing monitor card now
+  draws the design's **26-bar sparkline** (`Sparkline` in `MonitorCard.tsx`):
+  per-monitor `GET /monitors/{id}/results?limit=26` via the shared
+  `useMonitorResults` hook (accepted N+1 — TanStack Query caches per key;
+  `enabled: false` skips the fetch entirely for `checks == 0` monitors, so
+  no-data cards cost nothing), bars oldest→newest, green `bg-up` / red
+  `bg-down` per check `success` (design's amber = degraded, absent in v1),
+  height 4–16px scaled by latency relative to the window max (failed/no-latency
+  → fixed 14px). `useMonitorResults` gained an `{enabled}` option. Dashboard
+  tests now route stubs by path (`stubDashboard(list, resultsById)`). Frontend
+  suite **52 passed**. `/monitors/:id` now renders real check history
   from `GET /monitors/{id}/results?limit=50` — **one query feeds both panels**
   (new `useMonitorResults` hook + `CheckResult` type in `src/lib/monitors.ts`):
   a **Recharts** line chart (new dep, recharts 3.9) of `latency_ms` over
@@ -290,15 +300,13 @@
 
 ## Next action
 
-➡️ **S12.2 — dashboard 26-bar sparkline** (design §Screen 1: 26 bars, flex row,
-heights 4–16px, green/red per check result — no degraded in v1): per-monitor
-`GET /monitors/{id}/results?limit=26` from within `MonitorCard` (accepted N+1
-with TanStack Query caching; reuse `useMonitorResults`), oldest→newest bars,
-height scaled by latency. Then **S12.3 — live updates**: fetch-based SSE
-reader for `GET /api/v1/events` (decision made — Bearer header via fetch, no
-backend change; record D33 in PLAN §7), `check_completed`/`status_changed` →
-invalidate the touched monitor's queries + the list query. Component tests
-with a scripted stream.
+➡️ **S12.3 — live updates** (finishes S12): fetch-based SSE reader for
+`GET /api/v1/events` (decision made — Bearer header via fetch + stream parsing,
+no backend change; record **D33** in PLAN §7), a `useLiveEvents` hook mounted
+in the app shell: `check_completed`/`status_changed` → invalidate the touched
+monitor's queries (`["monitors", id]` prefix) + the list query. Reconnect with
+backoff on stream failure. Component tests with a scripted
+ReadableStream/fetch fake. Then tick S12 and update PLAN §7 + this file.
 
 **Parked follow-ups from S11.1** (not blockers): the auth token has no settings
 UI yet (localStorage/`VITE_AUTH_TOKEN` only — add an entry surface when a 401 is
@@ -387,6 +395,41 @@ notifiers open a short-lived `httpx.AsyncClient` per send (no shared pooled clie
 > Commit(s): <conventional commit subject lines>
 > Resume hint: <the very next concrete step>
 > ```
+
+### S12.2 — Dashboard 26-bar sparkline  · 2026-07-18
+Done: The sparkline parked at S11.2 (design §Screen 1 item 2: 26 bars, 30px
+row, gap 2px, heights 4–16px, color per check result). `Sparkline` component
+inside `MonitorCard.tsx`: fetches `GET /monitors/{id}/results?limit=26`
+through the shared `useMonitorResults` hook — **accepted N+1** (one small
+query per visible card, cached by TanStack Query under
+`["monitors", id, "results", {limit}]`; S12.3's SSE invalidation will refresh
+them) — with the new `{enabled}` hook option wired to `checks > 0`, so a
+no-data monitor issues **no** request and renders no sparkline. Bars render
+oldest→newest (API is newest-first, reversed once), `bg-up` green on success /
+`bg-down` red on failure (the design's amber maps to `degraded`, which v1
+doesn't have — same mapping note as S11.2), height `4 + 12·latency/max`
+rounded (window-relative), failed checks with null latency get a fixed 14px
+red bar.
+Tests: `tests/dashboard.test.tsx` — stubs refactored to route by path
+(`stubDashboard(list, resultsById)` + a `result()` factory; the old
+blanket `mockResolvedValue` would have fed monitor fixtures to the results
+endpoint) — +2: sparkline renders one bar per result with the right colors +
+asserts the exact `?limit=26` fetch; a `checks == 0` card renders no sparkline
+**and** never fetches results. `pnpm test` → **52 passed**; `pnpm build`
+clean. Backend untouched.
+Decisions: none new (N+1-with-caching was already the recorded S12 approach;
+D33 still lands with S12.3).
+Files: `frontend/src/components/MonitorCard.tsx` (+`Sparkline`,
+`SPARKLINE_BARS`), `frontend/src/lib/monitors.ts` (`useMonitorResults`
++`{enabled}`), `frontend/tests/dashboard.test.tsx` (stub refactor + 2 tests).
+Follow-ups / parked: no batch endpoint (a `?include=recent_results` on the
+list would collapse the N+1 — SPEC §8 candidate if card counts grow); bar
+tooltips (per-check detail on hover) not in the design, skipped.
+Commit(s): `feat(frontend): dashboard 26-bar sparkline per monitor card
+(S12.2)`.
+Resume hint: start S12.3 — failing test first with a scripted fetch/
+ReadableStream fake emitting `check_completed` frames; then `src/lib/sse.ts`
+(fetch-based reader) + `useLiveEvents` in the app shell; record D33.
 
 ### S12.1 — Detail-page latency chart + recent runs table  · 2026-07-18
 Done: The S11.4 placeholder panel on `/monitors/:id` is real (PLAN §5 S12; S12

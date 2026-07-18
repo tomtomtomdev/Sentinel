@@ -74,12 +74,18 @@ export interface CheckResult {
 }
 
 /** Newest-first check history (SPEC §3.5) — feeds the latency chart, the runs
- * table, and the dashboard sparkline. */
-export function useMonitorResults(id: string, limit: number) {
+ * table, and the dashboard sparkline. `enabled: false` skips the fetch (a
+ * no-data monitor has nothing to draw). */
+export function useMonitorResults(
+  id: string,
+  limit: number,
+  { enabled = true }: { enabled?: boolean } = {},
+) {
   return useQuery({
     queryKey: ["monitors", id, "results", { limit }],
     queryFn: ({ signal }) =>
       api.get<CheckResult[]>(`/monitors/${id}/results?limit=${limit}`, signal),
+    enabled,
   });
 }
 

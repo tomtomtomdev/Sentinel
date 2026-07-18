@@ -65,6 +65,35 @@ const FIXTURES: MonitorListItem[] = [
   }),
 ];
 
+/** A minimal CheckResult for the sparkline — only what the bars read. */
+function result(id: string, success: boolean, latency_ms: number | null) {
+  return {
+    id,
+    monitor_id: "00000000-0000-0000-0000-000000000001",
+    started_at: "2026-07-17T09:00:00Z",
+    finished_at: "2026-07-17T09:00:00Z",
+    status_code: success ? 200 : null,
+    latency_ms,
+    response_size_bytes: null,
+    cert_expires_at: null,
+    success,
+    error: success ? null : "timeout",
+    assertion_results: [],
+  };
+}
+
+function stubDashboard(
+  list: MonitorListItem[] = FIXTURES,
+  resultsById: Record<string, unknown[]> = {},
+) {
+  mockedGet.mockImplementation((path: string) => {
+    if (path === "/monitors?include=summary") return Promise.resolve(list);
+    const match = /^\/monitors\/([^/]+)\/results/.exec(path);
+    if (match) return Promise.resolve(resultsById[match[1]] ?? []);
+    return Promise.reject(new Error(`unexpected GET ${path}`));
+  });
+}
+
 function renderDashboard() {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
@@ -80,7 +109,7 @@ function renderDashboard() {
 
 describe("dashboard", () => {
   it("requests the monitor list with the 24h summary include", async () => {
-    mockedGet.mockResolvedValue(FIXTURES);
+    stubDashboard();
     renderDashboard();
 
     await screen.findByText("Prod health");
@@ -91,7 +120,7 @@ describe("dashboard", () => {
   });
 
   it("renders a card per monitor: status pill, method chip, stripped URL, metrics", async () => {
-    mockedGet.mockResolvedValue(FIXTURES);
+    stubDashboard();
     renderDashboard();
 
     const upCard = (await screen.findByText("Prod health")).closest("article")!;
@@ -115,7 +144,7 @@ describe("dashboard", () => {
   });
 
   it("computes the summary stat cards from the list", async () => {
-    mockedGet.mockResolvedValue(FIXTURES);
+    stubDashboard();
     renderDashboard();
 
     const stats = await screen.findByRole("list", { name: /summary/i });
@@ -134,7 +163,7 @@ describe("dashboard", () => {
   });
 
   it("filters cards by the search field (name or URL)", async () => {
-    mockedGet.mockResolvedValue(FIXTURES);
+    stubDashboard();
     renderDashboard();
     await screen.findByText("Prod health");
 
@@ -148,7 +177,7 @@ describe("dashboard", () => {
   });
 
   it("shows the create toast and NEW pill when arriving from the create flow", async () => {
-    mockedGet.mockResolvedValue(FIXTURES);
+    stubDashboard();
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
     });
@@ -177,8 +206,48 @@ describe("dashboard", () => {
     expect(within(card).getByText("NEW")).toBeInTheDocument();
   });
 
+  it("renders a sparkline bar per recent check, colored by result (S12.2)", async () => {
+    stubDashboard(FIXTURES, {
+      "00000000-0000-0000-0000-000000000001": [
+        result("r3", false, null), // newest
+        result("r2", true, 200),
+        result("r1", true, 100), // oldest
+      ],
+    });
+    renderDashboard();
+
+    const upCard = (await screen.findByText("Prod health")).closest("article")!;
+    const spark = await within(upCard).findByTestId("sparkline");
+    // per-monitor results are fetched with the design's 26-bar budget
+    expect(mockedGet).toHaveBeenCalledWith(
+      "/monitors/00000000-0000-0000-0000-000000000001/results?limit=26",
+      expect.anything(),
+    );
+
+    const bars = Array.from(spark.children);
+    expect(bars).toHaveLength(3);
+    // oldest→newest left-to-right: green, green, red (failed check)
+    expect(bars[0].className).toContain("bg-up");
+    expect(bars[1].className).toContain("bg-up");
+    expect(bars[2].className).toContain("bg-down");
+  });
+
+  it("does not fetch results or render a sparkline for a no-data monitor", async () => {
+    stubDashboard();
+    renderDashboard();
+
+    const unknownCard = (await screen.findByText("New endpoint")).closest(
+      "article",
+    )!;
+    expect(within(unknownCard).queryByTestId("sparkline")).not.toBeInTheDocument();
+    expect(mockedGet).not.toHaveBeenCalledWith(
+      "/monitors/00000000-0000-0000-0000-000000000003/results?limit=26",
+      expect.anything(),
+    );
+  });
+
   it("shows an empty state with an add CTA when there are no monitors", async () => {
-    mockedGet.mockResolvedValue([]);
+    stubDashboard([]);
     renderDashboard();
 
     expect(await screen.findByText(/no monitors yet/i)).toBeInTheDocument();
