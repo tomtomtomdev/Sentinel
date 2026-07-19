@@ -1,6 +1,7 @@
 # Sentinel — one-command self-host stack (PLAN §6).
 # Brings up Postgres, runs migrations to completion, then starts the FastAPI
-# web API and the scheduler worker (the frontend is added in S13.2).
+# web API, the scheduler worker, and the nginx-served SPA (single origin — nginx
+# proxies /api to web). Open the app at http://localhost:${FRONTEND_PORT:-8080}.
 #
 #   cp .env.example .env          # then set AUTH_TOKEN + SECRET_KEY
 #   docker compose up --build
@@ -79,6 +80,18 @@ services:
     depends_on:
       migrate:
         condition: service_completed_successfully
+    restart: unless-stopped
+
+  # nginx serves the built SPA and reverse-proxies /api → web (single origin).
+  # This is the app's entry point: open http://localhost:${FRONTEND_PORT:-8080}.
+  frontend:
+    build:
+      context: ./frontend
+    image: sentinel-frontend
+    ports:
+      - "${FRONTEND_PORT:-8080}:80"
+    depends_on:
+      - web
     restart: unless-stopped
 
 volumes:

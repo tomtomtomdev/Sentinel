@@ -20,7 +20,28 @@
 
 ## Current state
 
-- **Phase:** **S13.1 COMPLETE (backend image + compose; S13 split S13.1 image /
+- **Phase:** **S13.2 COMPLETE (frontend image + reverse proxy; S13 split S13.1
+  image / S13.2 frontend proxy / S13.3 fly+runbook — D34).** The whole app now
+  containerizes as a **single origin**. `frontend/Dockerfile` is a two-stage
+  build: `node:22-bookworm-slim` + corepack-pinned `pnpm@9.15.0` runs `pnpm
+  install --frozen-lockfile` then `pnpm build` (`tsc --noEmit && vite build`),
+  and an `nginx:1.27-alpine` runtime serves the built `dist/` and reverse-
+  proxies `/api/` → the `web` service. `frontend/nginx.conf`: history-fallback
+  (`try_files … /index.html`) for React Router deep links, and an `/api/`
+  location that resolves `web` at request time (variable + `resolver
+  127.0.0.11`, so nginx boots even before `web` is up) with **`proxy_buffering
+  off` + `proxy_read_timeout 3600s`** so the S12.3 SSE stream
+  (`GET /api/v1/events`) isn't buffered. No CORS, no token in a URL (D33 posture
+  holds in prod; the SPA's default `VITE_API_BASE_URL=/api/v1` needs no build
+  arg and no token is baked in). Added the `frontend` service to
+  `docker-compose.yml` (`image: sentinel-frontend`, `${FRONTEND_PORT:-8080}:80`,
+  `depends_on: web`) — the app's entry point is now
+  `http://localhost:8080`; `web` stays on 8000 for debugging. `pnpm build`
+  verified locally (626 kB recharts chunk = the known parked warning); frontend
+  suite **63 passed**; backend gate unchanged (495/50, ruff + mypy clean).
+  **Docker/nginx still not installed here** — `docker compose up` boot +
+  `nginx -t` are operator smoke-tests (S13.3 runbook), not verified in-repo.
+- **Prior phase:** **S13.1 COMPLETE (backend image + compose; S13 split S13.1 image /
   S13.2 frontend proxy / S13.3 fly+runbook — D34).** The backend now
   containerizes: `backend/Dockerfile` is a two-stage build (uv builder →
   `python:3.12-slim` runtime, non-root uid 10001, `UV_PYTHON_DOWNLOADS=0` so the
@@ -267,8 +288,8 @@
   `MonitorState` advances via `advance_state`; §3.5 read endpoints via `StatsService`;
   hourly `CheckRollup`s back 7d/30d; `GET /events` streams `check_completed`/
   `status_changed`. S5b (auth source) + S6 (scheduler + heartbeat) complete beneath.
-- **Last green commit:** S12.3 (`feat(frontend): live dashboard updates via
-  authed fetch-SSE reader — S12 complete (S12.3)`); S13.1 staged.
+- **Last green commit:** S13.1 (`chore(deploy): backend Dockerfile + compose
+  stack (db/migrate/web/worker) — S13.1`); S13.2 staged.
 - **Test suite:** `just test` (no DB) → **495 passed, 50 skipped** (+12 from S10.2).
   With `TEST_DATABASE_URL=…/sentinel_test` → **545 passed** (no skips). S10.2 added:
   `tests/unit/application/test_retention_service.py` (6 — per-store cutoffs + report
@@ -339,21 +360,23 @@
 
 ## Next action
 
-➡️ **S13.2 — frontend image + reverse proxy (single origin).** Multi-stage
-`frontend/Dockerfile` (node+pnpm build → nginx serving `dist/`), `nginx.conf`
-that serves the SPA with a history-fallback **and** reverse-proxies `/api/` →
-the `web` service with **buffering off + long read timeout** (so the S12.3 SSE
-stream at `/api/v1/events` works through nginx), `frontend/.dockerignore`, and a
-`frontend` service added to `docker-compose.yml` (published on
-`${FRONTEND_PORT:-8080}`, `depends_on: web`). Then the whole app is one origin —
-no CORS, no token in URLs. Verify `pnpm build` locally (the image's build
-stage). Then **S13.3** — `backend/fly.toml` (web + worker process groups,
-`release_command = alembic upgrade head`, **note the `postgresql+asyncpg://`
-scheme** since Fly PG attach sets a bare `postgres://` URL) + README runbook
-(compose one-command + Fly steps + `AUTH_TOKEN`/`SECRET_KEY` generation +
-do-not-expose warning + the S8 cross-process event gap note). Docker/flyctl are
-**not installed here** — author + static-validate; the operator runs the boot
-smoke-test.
+➡️ **S13.3 — Fly.io config + README runbook (finishes S13).** `backend/fly.toml`
+(app root = `backend/`): a `web` process (`uvicorn … --port 8080`) + a `worker`
+process group (`python -m sentinel.infrastructure.scheduler`), `[deploy]
+release_command = "alembic upgrade head"`, `[http_service]` on the web process
+only, per-process `[[vm]]` sizes. **Document the `postgresql+asyncpg://` scheme
+gotcha** — Fly Postgres attach sets a bare `postgres://` `DATABASE_URL`, but the
+app/alembic need the `+asyncpg` driver, so `DATABASE_URL` must be set as an
+explicit secret. Rewrite the README deploy section into a runbook: (1) compose
+one-command self-host (`cp .env.example .env`, generate `AUTH_TOKEN` +
+`SECRET_KEY`, `docker compose up --build`, open `:8080`), (2) Fly steps (launch,
+attach PG, `fly secrets set` AUTH_TOKEN/SECRET_KEY/DATABASE_URL, `fly deploy`);
+plus the **do-not-expose-without-the-gate** warning and a note on the **S8
+cross-process event gap** (worker checks don't reach the API's SSE stream until
+the parked Redis bus lands — with the compose split the dashboard's live
+updates only cover manual/API-triggered checks). Then update PROGRESS + the
+checklist and mark S13 complete. flyctl is **not installed here** — author +
+review only; the operator runs `fly deploy`.
 
 Consider while in there: self-hosted fonts, frontend CI job (PLAN §6), recharts
 code-split (all parked at S11.1/S12.1).
@@ -431,7 +454,7 @@ notifiers open a short-lived `httpx.AsyncClient` per send (no shared pooled clie
   - [x] **S12.3** Live updates via fetch-based SSE reader (D33)
 - [ ] **S13** Containerize & deploy _(split — see log)_
   - [x] **S13.1** Backend image + compose (db → migrate → web + worker)
-  - [ ] **S13.2** Frontend image + reverse proxy (single origin)
+  - [x] **S13.2** Frontend image + reverse proxy (single origin)
   - [ ] **S13.3** Fly.io config + README runbook
 - [ ] **S14** Hardening
 
@@ -451,6 +474,50 @@ notifiers open a short-lived `httpx.AsyncClient` per send (no shared pooled clie
 > Commit(s): <conventional commit subject lines>
 > Resume hint: <the very next concrete step>
 > ```
+
+### S13.2 — Frontend image + reverse proxy (single origin)  · 2026-07-19
+Done: The SPA containerizes and the compose stack is now the whole app on one
+origin (PLAN §5/§6, D34). `frontend/Dockerfile` — two stages:
+`node:22-bookworm-slim` builder with corepack-pinned `pnpm@9.15.0` runs `pnpm
+install --frozen-lockfile` then `pnpm build`, and an `nginx:1.27-alpine` runtime
+that copies `nginx.conf` + the built `/app/dist`. `frontend/nginx.conf`: SPA
+history-fallback (`try_files $uri $uri/ /index.html`) so React Router deep
+links resolve, and a `location /api/` that reverse-proxies to the backend `web`
+service using the **variable + `resolver 127.0.0.11` `proxy_pass`** form (nginx
+boots even if `web` isn't up yet and follows it across restarts) with
+**`proxy_buffering off` + `proxy_cache off` + `proxy_read_timeout 3600s`** so the
+S12.3 SSE stream (`GET /api/v1/events`) streams instead of buffering. Single
+origin ⇒ no CORS and the S9a Bearer token never hits a URL (D33 posture in
+prod); the SPA's default `VITE_API_BASE_URL=/api/v1` needs no build arg and no
+token is baked into the public bundle. Added a `frontend` service to
+`docker-compose.yml` (`image: sentinel-frontend`, `${FRONTEND_PORT:-8080}:80`,
+`depends_on: web`) — the app's entry point is now
+`http://localhost:${FRONTEND_PORT:-8080}`; `web` stays published on 8000 for
+direct/debug access. Root `.env.example` gained `FRONTEND_PORT` and a note that
+`DASHBOARD_BASE_URL` is the frontend URL for the compose stack.
+Tests: no new automated tests — infra artifacts. Validation: `pnpm build` run
+locally (exit 0 — `tsc --noEmit && vite build`, dist/ built; 626 kB chunk is the
+known parked recharts warning), so the image's build stage is proven; the
+frontend suite still **63 passed**; compose re-validated with PyYAML (5 services
+resolve, backend anchors intact). Backend Python untouched → gate 495/50, ruff +
+mypy clean. **nginx + Docker not installed here** — `nginx -t` and
+`docker compose up` (SPA at :8080 → `/api` proxied to web, incl. SSE) are
+operator smoke-tests documented in the S13.3 runbook, not verified in-repo.
+Decisions: **D34** extended (frontend nginx single-origin reverse proxy; SSE
+buffering-off; variable+resolver proxy_pass; no token baked into the bundle).
+Files: `frontend/Dockerfile` (new), `frontend/nginx.conf` (new),
+`frontend/.dockerignore` (new), `docker-compose.yml` (+`frontend` service +
+header), `.env.example` (+`FRONTEND_PORT`).
+Follow-ups / parked: no `fly.toml`/runbook yet (S13.3); the stack is unverified
+until run on a Docker host (`nginx -t` + `docker compose up`); recharts bundle
+still >500 kB (code-split parked); nginx `resolver 127.0.0.11` is Docker-embedded
+DNS — a non-compose deploy of this image needs its own resolver; fonts still load
+from Google Fonts CDN (self-host parked).
+Commit(s): `chore(deploy): frontend nginx image + /api reverse proxy in compose
+— S13.2`.
+Resume hint: start S13.3 — `backend/fly.toml` (web + worker processes,
+`release_command` migration, asyncpg URL note) + rewrite the README deploy
+section into a runbook; then mark S13 complete.
 
 ### S13.1 — Backend image + compose (db → migrate → web + worker)  · 2026-07-19
 Done: The backend containerizes and the self-host stack is defined (PLAN §5/§6,

@@ -1,0 +1,9 @@
+# Keep the build context lean and reproducible: never ship local installs or a
+# stale build into the image (pnpm install + vite build run inside the builder).
+node_modules/
+dist/
+coverage/
+.env
+.env.local
+Dockerfile
+.dockerignore

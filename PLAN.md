@@ -856,10 +856,24 @@ stable (after S7), against a mock server if needed.
     no apt build/runtime deps (cryptography/uvloop/httptools/asyncpg all ship
     cp312 manylinux wheels). `UV_PYTHON_DOWNLOADS=0` pins uv to the base image's
     Python so the copied venv's interpreter matches the runtime stage.
+  - **Frontend served by nginx, single origin via `/api` reverse proxy
+    (S13.2).** The SPA image (`frontend/Dockerfile`, node+pnpm build → nginx
+    runtime) serves the static bundle with a history-fallback and proxies
+    `/api/` → the `web` service. This keeps the app one origin — matching the
+    dev proxy in `vite.config.ts` — so there's **no CORS to configure and the
+    S9a Bearer token never appears in a URL** (D33's posture holds in prod). The
+    SPA's default `VITE_API_BASE_URL=/api/v1` needs no build arg, and no token
+    is baked into the public bundle (localStorage path only). nginx uses the
+    variable+`resolver 127.0.0.11` `proxy_pass` form so it boots even if `web`
+    isn't up yet, and sets `proxy_buffering off` + a long `proxy_read_timeout`
+    so the S12.3 SSE stream (`/api/v1/events`) isn't buffered. The frontend is
+    the entry point (`${FRONTEND_PORT:-8080}`); `web` stays published on 8000
+    for debugging.
   - **Docker not available in the build environment** — the compose file is
     validated statically (YAML + anchor merge) and the migration command is
-    already exercised by CI (`alembic upgrade head` on `postgres:16`), but the
-    end-to-end container boot is a smoke-test the operator runs on a Docker host
+    already exercised by CI (`alembic upgrade head` on `postgres:16`); `pnpm
+    build` (the frontend image's build stage) is run locally. But the end-to-end
+    container boot is a smoke-test the operator runs on a Docker host
     (documented in the S13.3 runbook), not something verified in-repo.
 
 _Append new decisions here as `Dn — <decision>: <why>` when slices force a choice._
