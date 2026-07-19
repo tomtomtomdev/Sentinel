@@ -20,7 +20,28 @@
 
 ## Current state
 
-- **Phase:** **S13 COMPLETE (S13.3 — Fly.io config + README runbook; split S13.1
+- **Phase:** **S14.1 COMPLETE (error-envelope consistency pass; S14 split S14.1
+  errors / S14.2 logging / S14.3 health / S14.4 rate-limit / S14.5 key-rotation —
+  D35).** Every error the API can emit now flows through the SPEC §5 envelope
+  `{"error":{"code","message","details"?}}`. Two handlers added to
+  `register_exception_handlers` (`interface/api/errors.py`) beside the existing
+  domain-error ones: (1) a **catch-all `Exception`** → `500 internal_error` with an
+  **opaque** message ("an internal error occurred") — the full exception is logged
+  server-side (`logger.exception`) but **no `str(exc)`/stack trace/details leak** to
+  the client (SPEC §6); because it registers on `Exception` it lands in Starlette's
+  outer `ServerErrorMiddleware`, so the specific `ValidationError`/`NotFoundError`/
+  `UnauthorizedError` handlers still win (inner `ExceptionMiddleware`, MRO), and the
+  catch-all fires only for genuinely unhandled errors. (2) a **`StarletteHTTPException`**
+  handler → same envelope for framework-raised errors: unknown route → `not_found`,
+  wrong method → `method_not_allowed` (+ a small `_HTTP_ERROR_CODES` map incl.
+  `rate_limited`/429 ahead of S14.4, `http_error` fallback), preserving `exc.headers`
+  (e.g. 405 `Allow`) — replaces FastAPI's default `{"detail":...}`. No `HTTPException`
+  is raised in `src/`, so this is a pure consistency pass. Gate green: `just test`
+  **498/50** (+3), ruff + mypy clean; app boots (`/api/v1/health` 200) and real-wire
+  smoke confirmed 404→`not_found`, `DELETE /health`→405 `method_not_allowed`, and a
+  raising route → `internal_error` 500 with the internal detail absent from the body.
+  **S14.2 (structured JSON logging) is the next slice.**
+- **Prior phase:** **S13 COMPLETE (S13.3 — Fly.io config + README runbook; split S13.1
   backend image / S13.2 frontend proxy / S13.3 fly+runbook — D34).** Sentinel is
   fully containerized with two documented deploy paths. `backend/fly.toml`
   defines the managed path (PLAN §6): a `web` process
@@ -384,11 +405,13 @@
 
 ## Next action
 
-➡️ **Begin S14 — hardening** (PLAN §5): rate limiting (esp. the 401 path,
-brute-force damping), structured logging, `/health` deepening (DB reachability),
-an error-envelope consistency pass, and a key-rotation runbook. Pick the
-highest-value item first (a failing test encoding its acceptance criterion), one
-slice at a time.
+➡️ **S14.2 — structured JSON logging** (PLAN §5, SPEC §6). Configure a JSON log
+formatter (stdlib `logging`, no new heavy dep unless justified); emit structured
+records for request handling + the S14.1 catch-all (the `logger.exception` there
+should serialize as JSON with the exception info, still **no secret values** — SPEC
+§6). Consider a per-request id. Test-first: assert a log record is emitted as JSON
+with the expected fields and that no secret/token appears. Then S14.3 (`/health`
+DB readiness), S14.4 (rate limiting → 429), S14.5 (key-rotation runbook).
 
 **Before/alongside S14, the operator must run the S13 container smoke-tests**
 (not verifiable in this build environment — no Docker/flyctl/nginx): `docker
@@ -481,7 +504,12 @@ notifiers open a short-lived `httpx.AsyncClient` per send (no shared pooled clie
   - [x] **S13.1** Backend image + compose (db → migrate → web + worker)
   - [x] **S13.2** Frontend image + reverse proxy (single origin)
   - [x] **S13.3** Fly.io config + README runbook
-- [ ] **S14** Hardening
+- [ ] **S14** Hardening _(split — D35)_
+  - [x] **S14.1** Error-envelope consistency pass (catch-all 500 + framework HTTP errors)
+  - [ ] **S14.2** Structured JSON logging
+  - [ ] **S14.3** `/health` deepening (DB readiness)
+  - [ ] **S14.4** Rate limiting (401/brute-force damping → 429)
+  - [ ] **S14.5** Key-rotation runbook
 
 ---
 
@@ -499,6 +527,44 @@ notifiers open a short-lived `httpx.AsyncClient` per send (no shared pooled clie
 > Commit(s): <conventional commit subject lines>
 > Resume hint: <the very next concrete step>
 > ```
+
+### S14.1 — Error-envelope consistency pass  · 2026-07-19
+Done: Every error the API can emit now flows through the SPEC §5 envelope
+`{"error":{"code","message","details"?}}`, and an unhandled 500 is opaque. Two
+handlers added to `register_exception_handlers` (`interface/api/errors.py`)
+alongside the existing domain-error ones: a **catch-all `Exception`** → `500
+internal_error` (message "an internal error occurred") that logs the full
+exception server-side (`logger.exception`) but leaks nothing (no `str(exc)`,
+stack trace, or `details`) to the client (SPEC §6); and a **`StarletteHTTP
+Exception`** handler → the same envelope for framework-raised errors (unknown
+route → `not_found`, wrong method → `method_not_allowed`; `_HTTP_ERROR_CODES`
+map incl. `rate_limited`/429 ahead of S14.4, `http_error` fallback), preserving
+`exc.headers` (405 `Allow`). Replaces FastAPI's default `{"detail":...}`.
+Because the catch-all registers on `Exception` it lands in Starlette's outer
+`ServerErrorMiddleware`, so the specific `ValidationError`/`NotFoundError`/
+`UnauthorizedError` handlers (inner `ExceptionMiddleware`, MRO-resolved) still
+win — the catch-all fires only for genuinely unhandled errors.
+Tests: `tests/integration/test_error_envelope.py` (3 — unhandled exception →
+`internal_error` 500 with the internal detail absent + no `details` key [via
+`ASGITransport(raise_app_exceptions=False)`, since `ServerErrorMiddleware`
+re-raises after responding]; unknown route → `not_found`; `DELETE /health` →
+`method_not_allowed`). Existing 401/404/422 envelope tests unaffected.
+`just test` **498/50** (+3), ruff + mypy clean. Real-wire smoke: app boots
+(`/api/v1/health` 200); 404/405/500 paths return the expected envelopes and the
+500 body carries no internal detail (the exception is logged server-side only).
+Decisions: **D35** (S14 split S14.1–S14.5; error-envelope consistency; opaque
+500; catch-all vs specific handler dispatch; the `raise_app_exceptions=False`
+test note) added to PLAN §7.
+Files: `src/sentinel/interface/api/errors.py` (+catch-all + HTTPException
+handlers, `_HTTP_ERROR_CODES`, `logger`), `tests/integration/test_error_
+envelope.py` (new).
+Follow-ups / parked: the 500 handler logs via stdlib `logging` (plain format for
+now) — **S14.2** makes it structured JSON; no per-request id yet (S14.2); rate
+limiting that actually emits `429` is **S14.4** (the code slug is reserved now).
+Commit(s): `feat(api): route every error through the SPEC §5 envelope; opaque
+500 (S14.1)`.
+Resume hint: start S14.2 — structured JSON logging (formatter + request context;
+the S14.1 `logger.exception` should serialize as JSON, still secret-free).
 
 ### S13.3 — Fly.io config + README runbook (finishes S13)  · 2026-07-19
 Done: The deploy artifacts and operator runbook (PLAN §5/§6, D34). `backend/

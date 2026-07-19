@@ -888,6 +888,34 @@ stable (after S7), against a mock server if needed.
     -t`) and `fly deploy` are smoke-tests the operator runs on a Docker/Fly host
     (documented in the README runbook), not something verified in-repo.
 
+- **D35 — S14 split S14.1–S14.5; every API error flows through the SPEC §5
+  envelope, and an unhandled 500 is opaque.** S14 (hardening) is sequenced so the
+  error-response contract is settled before slices that add new error shapes:
+  **S14.1** error-envelope consistency pass (done), **S14.2** structured JSON
+  logging, **S14.3** `/health` deepening (DB readiness), **S14.4** rate limiting
+  (401/brute-force damping → `429` in the envelope), **S14.5** key-rotation
+  runbook. S14.1 adds two handlers to `register_exception_handlers`
+  (`interface/api/errors.py`) alongside the existing domain-error ones:
+  - **A catch-all `Exception` handler** → `500 {"error":{"code":"internal_error",
+    "message":"an internal error occurred"}}`. It logs the full exception
+    server-side (`logger.exception`, so the trace is never swallowed — CLAUDE.md)
+    but returns an **opaque** envelope with no `str(exc)` / stack trace / details
+    (SPEC §6 — no internal leak). Registered on `Exception`, it lands in
+    Starlette's outer `ServerErrorMiddleware`, so the specific domain-error
+    handlers (`ValidationError`/`NotFoundError`/`UnauthorizedError`, resolved by
+    the inner `ExceptionMiddleware` via MRO) still win — the catch-all only fires
+    for genuinely unhandled errors.
+  - **A `StarletteHTTPException` handler** → the same envelope for framework-raised
+    HTTP errors (unknown route → `not_found`, wrong method → `method_not_allowed`,
+    plus a small `_HTTP_ERROR_CODES` map with an `http_error` fallback), replacing
+    FastAPI's default `{"detail": ...}`. Preserves `exc.headers` (e.g. 405 `Allow`).
+    No `HTTPException` is raised in `src/`, so this is purely a consistency pass;
+    it establishes `rate_limited` (429) ahead of S14.4.
+  - Testing note: a 500 is asserted with `httpx.ASGITransport(raise_app_exceptions
+    =False)`, because `ServerErrorMiddleware` re-raises after responding (for the
+    ASGI server's own logging) and the default transport would surface that
+    re-raise instead of the handler's response.
+
 _Append new decisions here as `Dn — <decision>: <why>` when slices force a choice._
 
 ---
