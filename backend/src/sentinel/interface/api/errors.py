@@ -37,6 +37,14 @@ def _envelope(code: str, message: str, details: dict[str, Any] | None = None) ->
     return {"error": error}
 
 
+def _log_context(request: Request) -> dict[str, str]:
+    # The request-context middleware (S14.2) stashes the correlation id on the
+    # scope; by the time this handler runs the logging contextvar is already reset,
+    # so read it back here to keep the error log correlated with the access log.
+    request_id = getattr(request.state, "request_id", None)
+    return {"request_id": request_id} if isinstance(request_id, str) else {}
+
+
 def register_exception_handlers(app: FastAPI) -> None:
     @app.exception_handler(ValidationError)
     async def _on_validation(_request: Request, exc: ValidationError) -> JSONResponse:
@@ -80,11 +88,11 @@ def register_exception_handlers(app: FastAPI) -> None:
         )
 
     @app.exception_handler(Exception)
-    async def _on_unhandled(_request: Request, exc: Exception) -> JSONResponse:
+    async def _on_unhandled(request: Request, exc: Exception) -> JSONResponse:
         # Last-resort catch-all: never let an unhandled error escape as a raw 500
         # with an internal detail. Log the full exception server-side; return an
         # opaque envelope so no stack trace / message leaks to the client (SPEC §6).
-        logger.exception("unhandled error processing request")
+        logger.exception("unhandled error processing request", extra=_log_context(request))
         return JSONResponse(
             status_code=500,
             content=_envelope("internal_error", "an internal error occurred"),

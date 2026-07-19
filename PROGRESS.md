@@ -20,7 +20,29 @@
 
 ## Current state
 
-- **Phase:** **S14.1 COMPLETE (error-envelope consistency pass; S14 split S14.1
+- **Phase:** **S14.2 COMPLETE (structured JSON logging; S14 split S14.1 errors /
+  S14.2 logging / S14.3 health / S14.4 rate-limit / S14.5 key-rotation — D35, D36).**
+  All `sentinel.*` logs now emit as one JSON line each (SPEC §6). New
+  `infrastructure/logging_config.py`: a `JsonLogFormatter` (stdlib, **no new dep**)
+  → `{timestamp, level, logger, message}` + any `extra=` context merged + `exc_info`
+  as a **traceback string** (stdlib `traceback`, **never frame locals**, so no
+  secret bound to a variable leaks — SPEC §6); a `request_id_var` contextvar; and an
+  **idempotent** `configure_logging()` (installs a root JSON handler once, leaves
+  pytest's capture handler alone). Wired via the **API lifespan** (so import-only
+  test clients keep their own log capture — not at import time) and the **worker
+  `main()`** (replaced `basicConfig`). New pure-ASGI `interface/api/middleware.py::
+  RequestContextMiddleware` (deliberately **not** `BaseHTTPMiddleware` — that buffers
+  the body and would break the S8 SSE stream): reads/generates `X-Request-ID`, echoes
+  it on the response, logs one `sentinel.access` record per request (`event=
+  http_request`, method, **path only — no query string**, status, `duration_ms`), and
+  carries the id via the contextvar **and** `scope['state']['request_id']` so the
+  S14.1 catch-all error log (runs in `ServerErrorMiddleware`, after the middleware's
+  `finally` resets the contextvar) still correlates. Gate green: `just test`
+  **508/50** (+10), ruff + mypy clean; app boots and real-wire smoke confirmed the
+  `x-request-id` echo, a JSON `sentinel.access` line honouring an inbound id, a fresh
+  hex id + 404 for an unknown route, and the `Authorization` bearer never appearing in
+  a log line. **S14.3 (`/health` DB readiness) is the next slice.**
+- **Prior phase:** **S14.1 COMPLETE (error-envelope consistency pass; S14 split S14.1
   errors / S14.2 logging / S14.3 health / S14.4 rate-limit / S14.5 key-rotation —
   D35).** Every error the API can emit now flows through the SPEC §5 envelope
   `{"error":{"code","message","details"?}}`. Two handlers added to
@@ -335,8 +357,17 @@
   `status_changed`. S5b (auth source) + S6 (scheduler + heartbeat) complete beneath.
 - **Last green commit:** S13.2 (`chore(deploy): frontend nginx image + /api
   reverse proxy in compose — S13.2`); S13.3 staged.
-- **Test suite:** `just test` (no DB) → **495 passed, 50 skipped** (+12 from S10.2).
-  With `TEST_DATABASE_URL=…/sentinel_test` → **545 passed** (no skips). S10.2 added:
+- **Test suite:** `just test` (no DB) → **508 passed, 50 skipped** (+10 from S14.2,
+  +3 from S14.1). S14.2 added: `tests/unit/infrastructure/test_logging_config.py`
+  (6 — core JSON fields, `extra=` merge, request_id from contextvar / omitted when
+  unset, `exc_info` → traceback string, `configure_logging` idempotent) and
+  `tests/integration/test_request_logging.py` (4 — one JSON `sentinel.access`
+  record per request; `X-Request-ID` echoed + inbound id honoured; the
+  `Authorization` bearer never appears in any log line; an unhandled 500 logs both
+  an access record [status 500] and the catch-all traceback record, both carrying
+  the request id). Real-wire smoke: booted uvicorn, `/health` echoed
+  `x-request-id: smoke-1` and emitted the JSON access line; unknown route got a
+  fresh hex id + 404. Earlier S10.2 (+12): S10.2 added:
   `tests/unit/application/test_retention_service.py` (6 — per-store cutoffs + report
   counts, second-run no-op, custom policy honoured, non-positive window rejected
   [parametrized ×3]), one `prune_before` contract test in each of the three repo
@@ -405,13 +436,16 @@
 
 ## Next action
 
-➡️ **S14.2 — structured JSON logging** (PLAN §5, SPEC §6). Configure a JSON log
-formatter (stdlib `logging`, no new heavy dep unless justified); emit structured
-records for request handling + the S14.1 catch-all (the `logger.exception` there
-should serialize as JSON with the exception info, still **no secret values** — SPEC
-§6). Consider a per-request id. Test-first: assert a log record is emitted as JSON
-with the expected fields and that no secret/token appears. Then S14.3 (`/health`
-DB readiness), S14.4 (rate limiting → 429), S14.5 (key-rotation runbook).
+➡️ **S14.3 — `/health` deepening (DB readiness)** (PLAN §5/§7 D35, SPEC §6). The
+liveness probe currently returns `{"status":"ok"}` unconditionally. Add a
+readiness check that pings Postgres (a cheap `SELECT 1` via the session factory)
+so a DB outage surfaces as a non-200 (or a `status: degraded` payload — decide the
+shape test-first). Keep `/health` **outside** the S9a auth gate. Consider whether
+liveness vs readiness want separate endpoints/paths. Then S14.4 (rate limiting →
+429), S14.5 (key-rotation runbook). **S14.2 parked:** uvicorn's own `uvicorn.*`
+access/error loggers still use uvicorn's plain format (JSON there needs a uvicorn
+`--log-config` — parked); SPEC §6 "basic runtime metrics" (checks/sec, queue
+depth) not yet emitted — a separate observability follow-up.
 
 **Before/alongside S14, the operator must run the S13 container smoke-tests**
 (not verifiable in this build environment — no Docker/flyctl/nginx): `docker
@@ -506,7 +540,7 @@ notifiers open a short-lived `httpx.AsyncClient` per send (no shared pooled clie
   - [x] **S13.3** Fly.io config + README runbook
 - [ ] **S14** Hardening _(split — D35)_
   - [x] **S14.1** Error-envelope consistency pass (catch-all 500 + framework HTTP errors)
-  - [ ] **S14.2** Structured JSON logging
+  - [x] **S14.2** Structured JSON logging
   - [ ] **S14.3** `/health` deepening (DB readiness)
   - [ ] **S14.4** Rate limiting (401/brute-force damping → 429)
   - [ ] **S14.5** Key-rotation runbook
@@ -527,6 +561,55 @@ notifiers open a short-lived `httpx.AsyncClient` per send (no shared pooled clie
 > Commit(s): <conventional commit subject lines>
 > Resume hint: <the very next concrete step>
 > ```
+
+### S14.2 — Structured JSON logging  · 2026-07-19
+Done: Every `sentinel.*` log record now serialises as one line of JSON (SPEC §6).
+New `infrastructure/logging_config.py` — `JsonLogFormatter` (stdlib `logging`, **no
+new dependency**): `{timestamp (UTC ISO), level, logger, message}`, merges any
+`extra=` structured context, and renders `exc_info` as a **traceback string** via
+stdlib `traceback` (source lines + the exception's own message, **never frame
+locals** — so a secret held in a variable can't leak through a trace; SPEC §6);
+a `request_id_var` contextvar; and an **idempotent** `configure_logging()` that
+adds a root JSON handler only if one isn't already present (so it coexists with
+pytest's capture handler). Wired via the **API lifespan** (`create_app`) — startup,
+not import time, so `ASGITransport` test clients that don't run the lifespan keep
+their own capture — and the **worker `main()`** (replaced `logging.basicConfig`).
+New pure-ASGI `interface/api/middleware.py::RequestContextMiddleware`
+(deliberately **not** `BaseHTTPMiddleware`, which buffers the response body and
+would break the S8 SSE stream in `GET /events`): assigns a correlation id
+(inbound `X-Request-ID` else a fresh `uuid4().hex`), echoes it on the response,
+emits one `sentinel.access` record per request (`event=http_request`, method,
+**path only — never the query string**, status, `duration_ms`), and carries the
+id both via the contextvar (auto-stamped on any in-request log) and
+`scope['state']['request_id']`. The S14.1 catch-all handler now reads that
+scope-state id (its `logger.exception` runs in `ServerErrorMiddleware`, *after*
+the middleware `finally` resets the contextvar), so the access line and the error
+traceback share a request id. Access + error stay two records, not merged.
+Tests: `tests/unit/infrastructure/test_logging_config.py` (6) +
+`tests/integration/test_request_logging.py` (4) — see Test suite. `just test`
+**508/50** (+10), ruff + mypy strict clean. Real-wire smoke: uvicorn boot,
+`/api/v1/health` 200 with `x-request-id: smoke-1` echoed and a JSON
+`sentinel.access` line honouring it; unknown route → fresh hex id + 404; the
+`Authorization` bearer never appears in a log line.
+Decisions: **D36** (stdlib JSON formatter + pure-ASGI request middleware; no new
+dep; traceback-not-locals secret safety; contextvar + `scope['state']` dual carry
+for the post-reset catch-all; uvicorn-own-logs + runtime metrics parked) added to
+PLAN §7.
+Files: `src/sentinel/infrastructure/logging_config.py` (new),
+`src/sentinel/interface/api/middleware.py` (new), `src/sentinel/interface/main.py`
+(+lifespan +middleware), `src/sentinel/interface/api/errors.py` (+`_log_context`,
+catch-all logs the request id), `src/sentinel/infrastructure/scheduler.py`
+(`main()` uses `configure_logging`), `tests/unit/infrastructure/test_logging_
+config.py` (new), `tests/integration/test_request_logging.py` (new).
+Follow-ups / parked: uvicorn's own `uvicorn.*` access/error loggers keep uvicorn's
+plain format (JSON there needs a uvicorn `--log-config` — parked); SPEC §6 "basic
+runtime metrics" (checks/sec, queue depth) not yet emitted (separate follow-up);
+no log-level env knob yet (`configure_logging(level=…)` defaults INFO).
+Commit(s): `feat(obs): structured JSON logging + request-id access middleware
+(S14.2)`.
+Resume hint: start S14.3 — deepen `/api/v1/health` with a DB-readiness check
+(`SELECT 1`), test-first on the degraded/non-200 shape; keep it outside the S9a
+gate.
 
 ### S14.1 — Error-envelope consistency pass  · 2026-07-19
 Done: Every error the API can emit now flows through the SPEC §5 envelope

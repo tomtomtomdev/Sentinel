@@ -916,6 +916,32 @@ stable (after S7), against a mock server if needed.
     ASGI server's own logging) and the default transport would surface that
     re-raise instead of the handler's response.
 
+- **D36 — S14.2 structured JSON logging: stdlib formatter + pure-ASGI request
+  middleware; no new dependency.** A `JsonLogFormatter` (`infrastructure/
+  logging_config.py`) serialises every `LogRecord` to one JSON line (timestamp/
+  level/logger/message + merged `extra=` context + a traceback string for
+  `exc_info`). It uses stdlib `traceback` only — **never frame locals** — so a
+  secret bound to a variable can't leak through a trace (SPEC §6 hard rule);
+  callers still must not put secret values in messages/extra. `configure_logging`
+  installs it on the **root** logger idempotently (detects an existing
+  `JsonLogFormatter` handler, leaves pytest's capture handler in place). It is
+  wired via the **API lifespan** (so import-only test clients keep their own
+  capture) and the **worker `main()`** (replacing `basicConfig`). Request
+  correlation is a **pure-ASGI `RequestContextMiddleware`** (`interface/api/
+  middleware.py`) — deliberately not `BaseHTTPMiddleware`, which buffers the body
+  and would break the S8 SSE stream. It reads/generates `X-Request-ID`, echoes it
+  on the response, logs one `sentinel.access` record per request (`event=
+  http_request`, method, **path only — never the query string**, status,
+  `duration_ms`), and carries the id two ways: a **contextvar** (`request_id_var`,
+  auto-stamped on any in-request log) plus **`scope['state']['request_id']`** so
+  the S14.1 catch-all error handler (which runs in `ServerErrorMiddleware`,
+  *after* the middleware's `finally` resets the contextvar) can still correlate
+  its traceback log. Access + error are two records (one info access line, one
+  error line with the trace), not merged. **Parked:** uvicorn's own `uvicorn.*`
+  access/error loggers stay in uvicorn's plain format (JSON there needs a uvicorn
+  `--log-config`); no queue-depth/checks-per-sec metrics yet (SPEC §6 "basic
+  runtime metrics" — separate follow-up).
+
 _Append new decisions here as `Dn — <decision>: <why>` when slices force a choice._
 
 ---

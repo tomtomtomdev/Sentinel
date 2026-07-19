@@ -55,6 +55,7 @@ from sentinel.infrastructure.db.monitor_state_repository import SqlMonitorStateR
 from sentinel.infrastructure.db.state_transition_repository import SqlStateTransitionRepository
 from sentinel.infrastructure.db.token_store import SqlTokenStore
 from sentinel.infrastructure.heartbeat import HttpxHeartbeat, NullHeartbeat
+from sentinel.infrastructure.logging_config import configure_logging
 from sentinel.infrastructure.notifiers import EmailNotifier, TelegramNotifier, WebhookNotifier
 from sentinel.infrastructure.probe import HttpxProbe
 from sentinel.infrastructure.secrets import FernetSecretBox
@@ -249,7 +250,7 @@ async def _serve() -> None:
 
 
 def main() -> None:
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+    configure_logging()
     asyncio.run(_serve())
 
 
