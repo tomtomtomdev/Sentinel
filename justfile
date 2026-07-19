@@ -42,6 +42,14 @@ types:
 migrate:
     cd {{backend}} && uv run alembic upgrade head
 
+# generate a fresh Fernet key for SECRET_KEY (rotation: prepend it — see README)
+gen-key:
+    @cd {{backend}} && uv run python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+
+# generate a random API credential for AUTH_TOKEN
+gen-token:
+    @cd {{backend}} && uv run python -c "import secrets; print(secrets.token_urlsafe(32))"
+
 # frontend tests (after S11)
 front-test:
     cd {{frontend}} && pnpm test

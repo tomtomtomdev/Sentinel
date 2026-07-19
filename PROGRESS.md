@@ -20,7 +20,29 @@
 
 ## Current state
 
-- **Phase:** **S14.4 COMPLETE (rate limiting → 429; S14 split S14.1 errors /
+- **Phase:** **S14.5 COMPLETE — key-rotation runbook. S14 (hardening) is DONE
+  (S14.1 errors / S14.2 logging / S14.3 health / S14.4 rate-limit / S14.5
+  key-rotation — D35–D39).** Operators can rotate `SECRET_KEY` from a documented
+  runbook (SPEC §6, D39) — but the slice ships **no new runtime behaviour**: the
+  `MultiFernet` key ring (encrypt-with-first / decrypt-with-any) was already built
+  + unit-tested in S5a (D18). Added: `just gen-key` / `just gen-token` recipes
+  (DRY the Fernet-key / URL-safe-credential one-liners the runbook repeats), a
+  README **"Rotating the encryption key (`SECRET_KEY`)"** section (prepend
+  `SECRET_KEY=<new>,<old>` → redeploy `web`+`worker` → new writes encrypt under
+  `<new>`, all `<old>` ciphertext still decrypts; then the **drop-old-key**
+  nuance), and an **executable-runbook test** pinning the real `env-string →
+  Settings.secret_key_ring() → FernetSecretBox` path S5a's explicit-key-list tests
+  skip (old ciphertext survives a prepend; new writes decrypt under the new
+  **first** key only; drop-too-soon makes a still-referenced key's ciphertext
+  unreadable). **Correctness call:** Sentinel does **not** auto-re-encrypt data at
+  rest — ciphertext stays under the key that wrote it until the record is next
+  saved — so the runbook recommends keeping the old key as a harmless
+  **decrypt-only** ring member until nothing depends on it (an active re-encryption
+  CLI that would make an eager drop safe-and-bounded is a parked follow-up). Gate
+  green: `just test` **535/50** (+3), ruff + mypy strict clean; app imports/boots;
+  `just gen-key` output round-trips as a real Fernet key; README anchor resolves.
+  **With S14 done, PLAN §5's slice roadmap (S0–S14) is complete.**
+- **Prior phase:** **S14.4 COMPLETE (rate limiting → 429; S14 split S14.1 errors /
   S14.2 logging / S14.3 health / S14.4 rate-limit / S14.5 key-rotation — D35, D36,
   D37, D38).** The auth gate now damps brute force (SPEC §6): repeated **failed**
   `Authorization: Bearer` attempts from one client IP are throttled to **`429`
@@ -49,7 +71,7 @@
   always (ungated, no limiter); bad-token attempts 1–2 → 401, attempts 3–4 → 429
   with `Retry-After: 60` and body `{"error":{"code":"rate_limited",...}}` — the real
   token **absent** from the body; `/health` still 200 while the limiter is tripped.
-  **S14.5 (key-rotation runbook) is the next slice — likely the last of S14.**
+  (S14.5, the key-rotation runbook, followed and closed out S14.)
 - **Prior phase:** **S14.3 COMPLETE (`/health` deepening — DB readiness; S14 split S14.1
   errors / S14.2 logging / S14.3 health / S14.4 rate-limit / S14.5 key-rotation —
   D35, D36, D37).** Liveness and readiness are now **separate probes** (D37).
@@ -409,10 +431,17 @@
   `MonitorState` advances via `advance_state`; §3.5 read endpoints via `StatsService`;
   hourly `CheckRollup`s back 7d/30d; `GET /events` streams `check_completed`/
   `status_changed`. S5b (auth source) + S6 (scheduler + heartbeat) complete beneath.
-- **Last green commit:** S14.3 (`feat(obs): /api/v1/ready DB-readiness probe;
-  /health stays liveness (S14.3)`); S14.4 staged.
-- **Test suite:** `just test` (no DB) → **532 passed, 50 skipped** (+17 from S14.4,
-  +7 from S14.3, +10 from S14.2, +3 from S14.1). S14.4 added:
+- **Last green commit:** S14.4 (`feat(security): brute-force damping on the auth
+  gate → 429 (S14.4)`); S14.5 staged.
+- **Test suite:** `just test` (no DB) → **535 passed, 50 skipped** (+3 from S14.5,
+  +17 from S14.4, +7 from S14.3, +10 from S14.2, +3 from S14.1). S14.5 added:
+  `tests/unit/infrastructure/test_key_rotation.py` (3 — an executable runbook
+  through the real `env-string → Settings.secret_key_ring() → FernetSecretBox`
+  path: old ciphertext survives prepending a new key; new writes decrypt under the
+  new *first* key only [old key alone `InvalidToken`s them]; dropping a
+  still-referenced key makes its ciphertext unreadable). No src changed — docs /
+  justfile / `.env.example` only; `just gen-key` smoke: output round-trips as a
+  real Fernet key. S14.4 added:
   `tests/unit/domain/test_rate_limit.py` (10 — full bucket starts allowed;
   allow-until-empty-then-deny; refill after enough time; partial refill not enough;
   refill capped at capacity; backwards clock adds no tokens; `per_window` derives
@@ -517,13 +546,19 @@
 
 ## Next action
 
-➡️ **S14.5 — Key-rotation runbook** (PLAN §5/§7 D35, SPEC §6). Document (and, if
-useful, add a `just` recipe / smoke for) rotating `SECRET_KEY` with `MultiFernet`:
-prepend the new key, redeploy (all keys still decrypt, the first encrypts), then
-later drop the old key once nothing is encrypted under it. This is the last S14
-slice; likely a docs/README-runbook change plus a decrypt-after-rotation
-verification (the crypto is already covered by the S5a `MultiFernet` unit tests).
-On completion, S14 (hardening) is done. **S14.4 parked:** the bucket keys on
+➡️ **PLAN §5's slice roadmap (S0–S14) is COMPLETE** — S14.5 closed out S14
+(hardening). There is no next *code* slice in the plan. The remaining gate before
+any public deploy is **operator work that can't run in this build environment**:
+the **S13 container smoke-tests** (below) and, when a key must actually be rotated,
+the new **README key-rotation runbook** (`SECRET_KEY` prepend → redeploy → keep the
+old key decrypt-only). A fresh context should (1) run the S13 smoke-tests, and (2)
+decide whether any parked follow-up below is worth promoting to a new slice — the
+strongest candidate is the **active re-encryption CLI** (D39: without it, safely
+*dropping* an old key means manually re-saving every secret-bearing record).
+**S14.5 parked:** the active re-encryption CLI (walk all secret columns,
+`MultiFernet.rotate` each) that would make dropping a key safe-and-bounded; the
+`SECRET_KEY` gen one-liners stay duplicated in the Fly.io README block on purpose
+(self-contained for operators without `just`). **S14.4 parked:** the bucket keys on
 `request.client.host`, so behind the nginx/Fly reverse proxy all clients collapse
 to the proxy IP unless uvicorn runs with proxy-header support at a trusted edge
 (deploy-config follow-up — do **not** blindly trust `X-Forwarded-For`); the per-key
@@ -535,7 +570,7 @@ LB/orchestrator readiness gate is a deploy-config follow-up. **Carried:** uvicor
 own `uvicorn.*` loggers keep uvicorn's plain format (JSON needs a `--log-config`);
 SPEC §6 "basic runtime metrics" (checks/sec, queue depth) not yet emitted.
 
-**Before/alongside S14, the operator must run the S13 container smoke-tests**
+**With the code roadmap done, the operator must run the S13 container smoke-tests**
 (not verifiable in this build environment — no Docker/flyctl/nginx): `docker
 compose up --build` → confirm `migrate` exits 0, `web`/`worker` start, the SPA
 loads at `:8080`, `GET /api/v1/health` answers through the nginx proxy, a manual
@@ -626,12 +661,12 @@ notifiers open a short-lived `httpx.AsyncClient` per send (no shared pooled clie
   - [x] **S13.1** Backend image + compose (db → migrate → web + worker)
   - [x] **S13.2** Frontend image + reverse proxy (single origin)
   - [x] **S13.3** Fly.io config + README runbook
-- [ ] **S14** Hardening _(split — D35)_
+- [x] **S14** Hardening _(split — D35)_
   - [x] **S14.1** Error-envelope consistency pass (catch-all 500 + framework HTTP errors)
   - [x] **S14.2** Structured JSON logging
   - [x] **S14.3** `/health` deepening (DB readiness) — liveness `/health` + readiness `/ready`
   - [x] **S14.4** Rate limiting (401/brute-force damping → 429)
-  - [ ] **S14.5** Key-rotation runbook
+  - [x] **S14.5** Key-rotation runbook
 
 ---
 
@@ -649,6 +684,50 @@ notifiers open a short-lived `httpx.AsyncClient` per send (no shared pooled clie
 > Commit(s): <conventional commit subject lines>
 > Resume hint: <the very next concrete step>
 > ```
+
+### S14.5 — Key-rotation runbook  · 2026-07-19
+Done: Operators can now rotate `SECRET_KEY` from a documented runbook (SPEC §6,
+PLAN D39). **No new runtime behaviour** — the `MultiFernet` crypto
+(encrypt-with-first / decrypt-with-any) was already built + unit-tested in S5a
+(D18). Added: (1) `just gen-key` / `just gen-token` recipes DRYing the Fernet-key
+/ URL-safe-credential one-liners the runbook repeats (both smoke-run: `gen-key`
+output round-trips as a real Fernet key); (2) a README **"Rotating the encryption
+key (`SECRET_KEY`)"** runbook — prepend a fresh key (`SECRET_KEY=<new>,<old>`) →
+redeploy `web`+`worker` → new writes encrypt under `<new>`, all `<old>` ciphertext
+still decrypts — plus the **drop-old-key** nuance (Sentinel does **not**
+auto-re-encrypt at rest, so keep the old key as a harmless decrypt-only ring
+member and only remove it once nothing depends on it, forced today by re-saving
+secret-bearing records + refreshing cached tokens); the compose block now uses the
+recipes and the root `.env.example` points at the runbook. **Correctness call:**
+"keep the old key" is the recommended posture precisely because there's no at-rest
+re-encryption walker yet (parked). This completes **S14 (hardening)**.
+Tests: `tests/unit/infrastructure/test_key_rotation.py` (3 — an **executable
+runbook** through the real `env-string → Settings.secret_key_ring() →
+FernetSecretBox` path S5a's explicit-key-list tests skip: old ciphertext survives
+a prepend; new writes decrypt under the new *first* key only [old key alone
+`InvalidToken`s them — the encrypt-with-first guard]; dropping a still-referenced
+key makes its ciphertext unreadable). `just test` **535/50** (+3), ruff + mypy
+strict clean; app imports/boots; README anchor `#rotating-the-encryption-key-secret_key`
+resolves.
+Decisions: **D39** (key rotation is a docs/runbook slice; recommended posture is
+keep-old-key-decrypt-only rather than eager-drop, because no at-rest re-encryption
+walker exists yet; active re-encryption CLI parked).
+Files: `backend/tests/unit/infrastructure/test_key_rotation.py` (new); `justfile`
+(`gen-key`/`gen-token`); `README.md` (rotation runbook + compose recipe use +
+inline pointer); `.env.example` (root — runbook pointer on the rotation note);
+`PLAN.md` (§7 D39); `PROGRESS.md`.
+Follow-ups / parked: **active re-encryption CLI** (walk every secret column,
+`MultiFernet.rotate` each, rewrite — makes dropping a key safe-and-bounded; its own
+vertical touching all repos); the `SECRET_KEY` env one-liners are duplicated in the
+Fly.io block (left self-contained on purpose — an operator may run it without
+`just`).
+Commit(s): `docs(security): SECRET_KEY key-rotation runbook + gen-key/gen-token
+recipes (S14.5)`.
+Resume hint: S14 (hardening) is complete — all of S14.1–S14.5 ticked. Per PLAN §5
+the roadmap ends at S14; the next context should confirm nothing in the parking
+lot is a release blocker, then treat the **S13 container smoke-tests** (Docker /
+flyctl / nginx — not runnable in this build env) as the remaining operator
+gate before any deploy.
 
 ### S14.4 — Rate limiting (brute-force damping → 429)  · 2026-07-19
 Done: The auth gate now damps brute force (SPEC §6, D38). Repeated **failed**

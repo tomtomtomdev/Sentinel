@@ -1005,6 +1005,31 @@ stable (after S7), against a mock server if needed.
   `rate_limit_enabled` (default on) / `rate_limit_max_failures` (10) /
   `rate_limit_window_seconds` (60) + `.env.example`.
 
+- **D39 — S14.5 key rotation is a docs/runbook slice; the recommended posture is
+  keep the old key (decrypt-only) rather than eagerly drop it, because there's no
+  at-rest re-encryption walker yet.** S14.5 (the last S14 slice) ships no new
+  runtime behaviour — the `MultiFernet` crypto (encrypt-with-first / decrypt-with-
+  any) is already built (S5a, D18) and unit-tested. It adds: (1) `just gen-key` /
+  `gen-token` recipes DRYing the key/credential one-liners the runbook repeats;
+  (2) a README **"Rotating the encryption key"** runbook — prepend a fresh key
+  (`SECRET_KEY=<new>,<old>`) → redeploy `web`+`worker` → new writes use `<new>`,
+  all `<old>` ciphertext still decrypts; (3) an **executable-runbook test**
+  (`tests/unit/infrastructure/test_key_rotation.py`) that pins the exact
+  `env-string → Settings.secret_key_ring() → FernetSecretBox` path the runbook
+  instructs — a gap S5a left (it builds the box from explicit key *lists*, never
+  through config parsing) — asserting old ciphertext survives a prepend, new
+  writes encrypt under the first key, and the **drop-too-soon hazard** (removing a
+  still-referenced key makes its ciphertext unreadable). **Key correctness call:
+  Sentinel does not auto-re-encrypt data at rest** — ciphertext stays under the
+  key that wrote it until that record is next saved — so the runbook's guidance is
+  to *keep* the old key as a harmless decrypt-only ring member (a ring may hold
+  many) and only remove it once nothing depends on it, which today means manually
+  re-saving every secret-bearing record + refreshing cached tokens first. An
+  **active re-encryption CLI** (walk all secret columns, `MultiFernet.rotate` each,
+  rewrite) that would make dropping a key safe-and-bounded is a **parked
+  follow-up** — deliberately out of a runbook slice's scope (it touches every repo
+  and is its own vertical). This completes **S14 (hardening)**.
+
 _Append new decisions here as `Dn — <decision>: <why>` when slices force a choice._
 
 ---
