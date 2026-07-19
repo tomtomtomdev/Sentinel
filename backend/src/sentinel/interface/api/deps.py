@@ -25,6 +25,7 @@ from sentinel.domain.ports import (
     HttpProbe,
     NotificationLogRepository,
     Notifier,
+    ReadinessCheck,
     SecretBox,
     StateTransitionRepository,
     TokenStore,
@@ -41,6 +42,7 @@ from sentinel.infrastructure.db.check_rollup_repository import SqlCheckRollupRep
 from sentinel.infrastructure.db.engine import create_engine, create_session_factory
 from sentinel.infrastructure.db.monitor_repository import SqlMonitorRepository
 from sentinel.infrastructure.db.monitor_state_repository import SqlMonitorStateRepository
+from sentinel.infrastructure.db.readiness import DbReadinessCheck
 from sentinel.infrastructure.db.state_transition_repository import SqlStateTransitionRepository
 from sentinel.infrastructure.db.token_store import SqlTokenStore
 from sentinel.infrastructure.events import InProcessEventBus
@@ -58,6 +60,12 @@ def get_session_factory() -> async_sessionmaker[AsyncSession]:
 
 def get_clock() -> Clock:
     return SystemClock()
+
+
+def get_readiness_check() -> ReadinessCheck:
+    """DB-backed readiness for `GET /api/v1/ready` (SPEC §6). Reuses the shared
+    session factory so the probe hits the same engine the app serves from."""
+    return DbReadinessCheck(get_session_factory())
 
 
 @lru_cache

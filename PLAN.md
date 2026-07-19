@@ -942,6 +942,34 @@ stable (after S7), against a mock server if needed.
   `--log-config`); no queue-depth/checks-per-sec metrics yet (SPEC §6 "basic
   runtime metrics" — separate follow-up).
 
+- **D37 — S14.3 `/health` deepening: liveness and readiness are SEPARATE
+  endpoints; readiness is a DB `SELECT 1` behind a port, 503 on failure.**
+  `GET /api/v1/health` stays **pure liveness** — 200 `{"status":"ok"}`,
+  unconditional, **no dependency checks** — so a transient DB outage never fails
+  the container/Fly healthcheck and restarts an otherwise-healthy web process
+  (killing the process on a DB blip is the anti-pattern). Readiness moves to a new
+  **`GET /api/v1/ready`**: it pings Postgres with a cheap `SELECT 1` and returns
+  200 `{"status":"ready","checks":{"database":"ok"}}` when reachable, else **503**
+  `{"status":"not_ready","checks":{"database":"error"}}` so a load balancer drains
+  the instance without the process dying. The payload is a **status document, not
+  the SPEC §5 error envelope** — orchestrators read the status code, and a
+  readiness 503 isn't an API "error". Both probes live in the `health` router,
+  which `create_app` includes **without** the S9a auth gate (D29), so both answer
+  without credentials (an orchestrator can't send a Bearer token). Architecture: a
+  new **`ReadinessCheck` port** (`domain/ports.py`, `async check() -> bool`,
+  behaviour not DB shape) with a `DbReadinessCheck` adapter
+  (`infrastructure/db/readiness.py`) that reuses the shared session factory;
+  `get_readiness_check` in `deps.py` is the override seam (tests inject a fake ok/
+  fail check, keeping the suite DB-free — D13). `check` **swallows every exception
+  to `False`** (a readiness probe must never crash) and logs secret-free — a
+  static message + `error_type` class name only, **never `str(exc)`**, because a
+  driver connection error can embed the `DATABASE_URL` password (SPEC §6);
+  real-wire smoke confirmed the password absent from the JSON log line.
+  **Parked:** the compose/Fly healthchecks still target `/health` (liveness, the
+  correct restart semantics) — wiring `/ready` as an LB/orchestrator readiness
+  gate is a deploy-config follow-up; SPEC §6 "basic runtime metrics" (checks/sec,
+  queue depth) remain unshipped (carried from D36).
+
 _Append new decisions here as `Dn — <decision>: <why>` when slices force a choice._
 
 ---

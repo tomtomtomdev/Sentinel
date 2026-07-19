@@ -223,6 +223,15 @@ class EventBus(Protocol):
     def subscribe(self) -> AbstractAsyncContextManager[AsyncIterator[Event]]: ...
 
 
+class ReadinessCheck(Protocol):
+    """Answers whether the process can serve traffic — i.e. its backing store is
+    reachable (SPEC §6). Backs `GET /api/v1/ready`. `check` returns True when the
+    dependency responds, False on any failure, and **never raises**: a readiness
+    probe that crashes is worse than one that reports "not ready"."""
+
+    async def check(self) -> bool: ...
+
+
 class HttpProbe(Protocol):
     """Executes one outbound HTTP request and returns a `ProbeResponse`, capturing
     status, latency, a bounded body sample, size, and (on HTTPS) the TLS leaf

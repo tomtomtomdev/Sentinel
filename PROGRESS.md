@@ -20,7 +20,31 @@
 
 ## Current state
 
-- **Phase:** **S14.2 COMPLETE (structured JSON logging; S14 split S14.1 errors /
+- **Phase:** **S14.3 COMPLETE (`/health` deepening — DB readiness; S14 split S14.1
+  errors / S14.2 logging / S14.3 health / S14.4 rate-limit / S14.5 key-rotation —
+  D35, D36, D37).** Liveness and readiness are now **separate probes** (D37).
+  `GET /api/v1/health` stays **pure liveness** (200 `{"status":"ok"}`,
+  unconditional, no dependency checks) so a transient DB outage never fails the
+  container/Fly healthcheck and restarts a healthy web process. New
+  **`GET /api/v1/ready`**: pings Postgres with a cheap `SELECT 1` → 200
+  `{"status":"ready","checks":{"database":"ok"}}` when reachable, else **503**
+  `{"status":"not_ready","checks":{"database":"error"}}` (a **status document, not**
+  the SPEC §5 error envelope — orchestrators read the code; a readiness 503 isn't
+  an API error). Both probes are in the `health` router, included **without** the
+  S9a gate, so both answer without credentials. New **`ReadinessCheck` port**
+  (`domain/ports.py`, `async check() -> bool`) + `DbReadinessCheck` adapter
+  (`infrastructure/db/readiness.py`, reuses the shared session factory);
+  `get_readiness_check` in `deps.py` is the fake-injection seam (suite stays
+  DB-free). `check` **swallows every exception to `False`** (a readiness probe must
+  never crash) and logs secret-free — static message + `error_type` class name
+  only, **never `str(exc)`** (a driver error can embed the `DATABASE_URL`
+  password — SPEC §6). Gate green: `just test` **515/50** (+7), ruff + mypy clean;
+  app boots. Real-wire smoke confirmed: `/health` 200 always; `/ready` 200
+  `database:ok` against a live DB; with a bad `DATABASE_URL`, `/ready` 503
+  `not_ready` + `/health` still 200 + the password **absent** from the JSON
+  `sentinel.readiness` warning line (only `error_type: ConnectionRefusedError`).
+  **S14.4 (rate limiting → 429) is the next slice.**
+- **Prior phase:** **S14.2 COMPLETE (structured JSON logging; S14 split S14.1 errors /
   S14.2 logging / S14.3 health / S14.4 rate-limit / S14.5 key-rotation — D35, D36).**
   All `sentinel.*` logs now emit as one JSON line each (SPEC §6). New
   `infrastructure/logging_config.py`: a `JsonLogFormatter` (stdlib, **no new dep**)
@@ -355,10 +379,21 @@
   `MonitorState` advances via `advance_state`; §3.5 read endpoints via `StatsService`;
   hourly `CheckRollup`s back 7d/30d; `GET /events` streams `check_completed`/
   `status_changed`. S5b (auth source) + S6 (scheduler + heartbeat) complete beneath.
-- **Last green commit:** S13.2 (`chore(deploy): frontend nginx image + /api
-  reverse proxy in compose — S13.2`); S13.3 staged.
-- **Test suite:** `just test` (no DB) → **508 passed, 50 skipped** (+10 from S14.2,
-  +3 from S14.1). S14.2 added: `tests/unit/infrastructure/test_logging_config.py`
+- **Last green commit:** S14.2 (`feat(obs): structured JSON logging + request-id
+  access middleware (S14.2)`); S14.3 staged.
+- **Test suite:** `just test` (no DB) → **515 passed, 50 skipped** (+7 from S14.3,
+  +10 from S14.2, +3 from S14.1). S14.3 added:
+  `tests/unit/infrastructure/test_readiness.py` (3 — `DbReadinessCheck.check()`
+  True on `SELECT 1` success, False when the DB is unreachable, and False + no
+  connection-string/password in any log line, via a fake session factory that
+  raises an error whose message embeds a secret) and 4 tests in
+  `tests/integration/test_health.py` (liveness `/health` stays 200 even when
+  readiness reports the DB down; `/ready` 200 `database:ok`; `/ready` 503
+  `not_ready`/`database:error`; both probes answer without a token when
+  `AUTH_TOKEN` is set) — via a `FakeReadinessCheck` injected through
+  `get_readiness_check`, keeping the suite DB-free (D13). Real-wire smoke:
+  `/ready` 200 against a live DB; bad `DATABASE_URL` → 503 + `/health` still 200 +
+  password absent from the `sentinel.readiness` JSON warning. S14.2 added: `tests/unit/infrastructure/test_logging_config.py`
   (6 — core JSON fields, `extra=` merge, request_id from contextvar / omitted when
   unset, `exc_info` → traceback string, `configure_logging` idempotent) and
   `tests/integration/test_request_logging.py` (4 — one JSON `sentinel.access`
@@ -436,16 +471,19 @@
 
 ## Next action
 
-➡️ **S14.3 — `/health` deepening (DB readiness)** (PLAN §5/§7 D35, SPEC §6). The
-liveness probe currently returns `{"status":"ok"}` unconditionally. Add a
-readiness check that pings Postgres (a cheap `SELECT 1` via the session factory)
-so a DB outage surfaces as a non-200 (or a `status: degraded` payload — decide the
-shape test-first). Keep `/health` **outside** the S9a auth gate. Consider whether
-liveness vs readiness want separate endpoints/paths. Then S14.4 (rate limiting →
-429), S14.5 (key-rotation runbook). **S14.2 parked:** uvicorn's own `uvicorn.*`
-access/error loggers still use uvicorn's plain format (JSON there needs a uvicorn
-`--log-config` — parked); SPEC §6 "basic runtime metrics" (checks/sec, queue
-depth) not yet emitted — a separate observability follow-up.
+➡️ **S14.4 — Rate limiting (401/brute-force damping → 429)** (PLAN §5/§7 D35, SPEC
+§6). Add rate limiting so repeated bad-credential hits on the auth gate (and, if
+cheap, all writes) are throttled to `429` in the SPEC §5 envelope — the
+`rate_limited` code slug is **already reserved** in `_HTTP_ERROR_CODES`
+(`errors.py`, D35). Decide the mechanism test-first (a small in-process
+token-bucket keyed by client IP is likely enough for v1; keep it behind a port/
+seam so a Redis-backed limiter can drop in for multi-instance later). The
+`require_auth` dependency (D29) is the natural composition seam. Then S14.5
+(key-rotation runbook). **S14.3 parked:** the compose/Fly healthchecks still
+target `/health` (liveness — correct restart semantics); wiring `/ready` as an
+LB/orchestrator readiness gate is a deploy-config follow-up. **Carried:** uvicorn's
+own `uvicorn.*` loggers keep uvicorn's plain format (JSON needs a `--log-config`);
+SPEC §6 "basic runtime metrics" (checks/sec, queue depth) not yet emitted.
 
 **Before/alongside S14, the operator must run the S13 container smoke-tests**
 (not verifiable in this build environment — no Docker/flyctl/nginx): `docker
@@ -541,7 +579,7 @@ notifiers open a short-lived `httpx.AsyncClient` per send (no shared pooled clie
 - [ ] **S14** Hardening _(split — D35)_
   - [x] **S14.1** Error-envelope consistency pass (catch-all 500 + framework HTTP errors)
   - [x] **S14.2** Structured JSON logging
-  - [ ] **S14.3** `/health` deepening (DB readiness)
+  - [x] **S14.3** `/health` deepening (DB readiness) — liveness `/health` + readiness `/ready`
   - [ ] **S14.4** Rate limiting (401/brute-force damping → 429)
   - [ ] **S14.5** Key-rotation runbook
 
@@ -561,6 +599,51 @@ notifiers open a short-lived `httpx.AsyncClient` per send (no shared pooled clie
 > Commit(s): <conventional commit subject lines>
 > Resume hint: <the very next concrete step>
 > ```
+
+### S14.3 — `/health` deepening (DB readiness)  · 2026-07-19
+Done: Liveness and readiness are now separate probes (D37). `GET /api/v1/health`
+stays **pure liveness** — 200 `{"status":"ok"}`, unconditional, no dependency
+checks — so a transient DB outage never fails the container/Fly healthcheck and
+restarts a healthy web process. New **`GET /api/v1/ready`** pings Postgres with a
+cheap `SELECT 1` → 200 `{"status":"ready","checks":{"database":"ok"}}` when
+reachable, else **503** `{"status":"not_ready","checks":{"database":"error"}}` (a
+status document, **not** the SPEC §5 error envelope — orchestrators read the
+status code). Both probes sit in the `health` router, included **without** the S9a
+gate (D29), so both answer without credentials. New `ReadinessCheck` port
+(`domain/ports.py`, `async check() -> bool` — behaviour, not DB shape) +
+`DbReadinessCheck` adapter (`infrastructure/db/readiness.py`, reuses the shared
+session factory); `get_readiness_check` in `deps.py` is the fake-injection seam so
+the suite stays DB-free (D13). `check` **swallows every exception to `False`** (a
+readiness probe must never crash) and logs secret-free — a static message +
+`error_type` class name only, **never `str(exc)`**, since a driver connection error
+can embed the `DATABASE_URL` password (SPEC §6).
+Tests: `tests/unit/infrastructure/test_readiness.py` (3) + 4 new in
+`tests/integration/test_health.py` — see Test suite. `just test` **515/50** (+7),
+ruff + mypy strict clean. Real-wire smoke: booted uvicorn — `/health` 200 always;
+`/ready` 200 `database:ok` against a live DB; with a bad `DATABASE_URL`, `/ready`
+503 `not_ready` while `/health` stayed 200, and the password was **absent** from
+the JSON `sentinel.readiness` warning line (only `error_type:
+ConnectionRefusedError`, carrying the request id).
+Decisions: **D37** (liveness/readiness as separate endpoints; readiness = DB
+`SELECT 1` behind a `ReadinessCheck` port; 503 status document not the error
+envelope; exception-swallowing + secret-free logging; both probes ungated) added
+to PLAN §7.
+Files: `src/sentinel/domain/ports.py` (+`ReadinessCheck`),
+`src/sentinel/infrastructure/db/readiness.py` (new),
+`src/sentinel/interface/api/deps.py` (+`get_readiness_check`),
+`src/sentinel/interface/api/health.py` (+`/ready`),
+`tests/unit/infrastructure/test_readiness.py` (new),
+`tests/integration/test_health.py` (extended).
+Follow-ups / parked: compose/Fly healthchecks still target `/health` (liveness —
+correct restart semantics); wiring `/ready` as an LB/orchestrator readiness gate is
+a deploy-config follow-up. Readiness checks only the DB — no other dependency
+(there is none outbound-critical at boot). SPEC §6 "basic runtime metrics"
+(checks/sec, queue depth) still unshipped (carried from D36).
+Commit(s): `feat(obs): /api/v1/ready DB-readiness probe; /health stays liveness
+(S14.3)`.
+Resume hint: start S14.4 — rate limiting on the auth gate (`require_auth`, D29) →
+`429` `rate_limited` (slug already reserved in `errors.py`), test-first on the
+throttle shape (in-process token bucket keyed by client IP, behind a seam).
 
 ### S14.2 — Structured JSON logging  · 2026-07-19
 Done: Every `sentinel.*` log record now serialises as one line of JSON (SPEC §6).
