@@ -155,14 +155,25 @@ config change — no re-encryption, no downtime, no bricked ciphertext.
   key. A ring may hold many keys; keeping one costs nothing and keeps every stored
   secret readable.
 - **Only remove `<old>`** (e.g. because it was compromised) once nothing is
-  encrypted under it. There's no built-in re-encryption walker yet (parked
-  follow-up), so force it first: re-save every secret-bearing record (monitors with
-  secret headers, auth sources, alert channels) and trigger an auth-source refresh
-  so cached tokens are rewritten under `<new>`. Then set `SECRET_KEY=<new>` and
-  redeploy.
+  encrypted under it. With the ring rotated to `<new>,<old>` (steps above), run the
+  re-encryption pass to move **every** stored secret onto `<new>`:
+
+  ```bash
+  just reencrypt          # or: python -m sentinel.infrastructure.reencrypt
+  ```
+
+  It walks every secret-bearing column — monitors' secret headers, auth-source
+  credentials + oauth secrets, cached tokens/refresh tokens, and alert-channel
+  configs — and rotates each ciphertext onto the ring's **first** key
+  (`MultiFernet.rotate`, ciphertext-to-ciphertext — plaintext is never
+  materialized). It uses the same `DATABASE_URL` / `SECRET_KEY` as the app; point
+  it at the live database and run it with the app quiescent enough that nothing
+  writes a secret under `<old>` mid-pass. It prints a per-table count and is safe to
+  re-run (idempotent). Once it completes, **nothing** depends on `<old>` — set
+  `SECRET_KEY=<new>` and redeploy.
 - **Verify** after dropping a key: the app boots (a malformed ring **fails fast**
   at startup) and a monitor / auth-source / channel that carried a secret still
   works. If any secret was missed it fails to decrypt at use — restore `<old>` to
-  the ring, redeploy, and re-save the stragglers.
+  the ring, redeploy, and re-run `just reencrypt`.
 
 Never commit real keys; `SECRET_KEY` comes only from the environment.

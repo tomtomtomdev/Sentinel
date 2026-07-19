@@ -62,3 +62,32 @@ def decrypt_secret_config(config: dict[str, Any], secret_box: SecretBox) -> dict
         )
         for key, value in config.items()
     }
+
+
+def rotate_value(token: str, secret_box: SecretBox) -> str:
+    """Re-encrypt a single stored ciphertext onto the ring's first key (S15, PLAN
+    D40). Never materializes plaintext — see `SecretBox.rotate`."""
+    return secret_box.rotate(token.encode("ascii")).decode("ascii")
+
+
+def rotate_secret_headers(headers: dict[str, str], secret_box: SecretBox) -> dict[str, str]:
+    """Rotate secret-bearing header values onto the first key; pass others through.
+    Same `is_secret_header` classifier as encryption, so the two never drift."""
+    return {
+        name: (rotate_value(value, secret_box) if is_secret_header(name) else value)
+        for name, value in headers.items()
+    }
+
+
+def rotate_secret_config(config: dict[str, Any], secret_box: SecretBox) -> dict[str, Any]:
+    """Rotate an alert channel's secret (string) config values onto the first key;
+    pass every other value through. Same `is_secret_config_key` classifier as
+    encryption, so the two never drift."""
+    return {
+        key: (
+            rotate_value(value, secret_box)
+            if is_secret_config_key(key) and isinstance(value, str)
+            else value
+        )
+        for key, value in config.items()
+    }

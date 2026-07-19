@@ -42,6 +42,11 @@ types:
 migrate:
     cd {{backend}} && uv run alembic upgrade head
 
+# re-encrypt every stored secret onto SECRET_KEY's first key (run after rotating a
+# key, before dropping the old one from the ring — see README)
+reencrypt:
+    cd {{backend}} && uv run python -m sentinel.infrastructure.reencrypt
+
 # generate a fresh Fernet key for SECRET_KEY (rotation: prepend it — see README)
 gen-key:
     @cd {{backend}} && uv run python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"

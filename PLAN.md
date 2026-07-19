@@ -241,6 +241,11 @@ don't batch.
   error-envelope consistency pass, key-rotation runbook. (Minimal auth gate
   already shipped in S9a.)
 
+- **S15 — Re-encryption CLI.** Post-roadmap slice realizing the D39/D40
+  follow-up: `just reencrypt` rotates every stored secret onto `SECRET_KEY`'s
+  first key so a rotated-out (e.g. compromised) key can actually be dropped from
+  the ring — the one step the S14.5 key-rotation runbook couldn't make safe.
+
 ---
 
 ## 6. Deployment plan
@@ -1029,6 +1034,34 @@ stable (after S7), against a mock server if needed.
   rewrite) that would make dropping a key safe-and-bounded is a **parked
   follow-up** — deliberately out of a runbook slice's scope (it touches every repo
   and is its own vertical). This completes **S14 (hardening)**.
+
+- **D40 — S15 realizes the D39 parked follow-up: an offline re-encryption CLI so a
+  rotated-out `SECRET_KEY` can actually be dropped.** A new slice beyond the
+  S0–S14 roadmap. `python -m sentinel.infrastructure.reencrypt` (`just reencrypt`)
+  walks every secret-bearing column — monitors' secret headers, auth-source
+  credentials (login body + secret headers) and oauth secrets, cached token /
+  refresh_token, and alert-channel configs — and rotates each ciphertext onto the
+  ring's **first** key. **Chosen primitive: `MultiFernet.rotate` via a new
+  `SecretBox.rotate` port method** (ciphertext→ciphertext, decrypt-with-any →
+  encrypt-with-first, **plaintext never materialized**) — over the alternative of
+  decrypt→re-encrypt through the repositories, which would also bump `updated_at`
+  on every monitor/auth-source and momentarily hold plaintext. `SecretBox` is a
+  Protocol implemented only by `FernetSecretBox`, so the port addition has zero
+  blast radius. **No drift with encryption:** the rotation helpers
+  (`rotate_secret_headers`/`rotate_secret_config` in `secret_mapping.py`) reuse the
+  very same `is_secret_header`/`is_secret_config_key` classifiers as the
+  encrypt/decrypt pairs; the auth-source `request`/`oauth` field layout is the one
+  spot restated (in `reencrypt.py`, mirroring `auth_source_repository`) and
+  cross-referenced in a comment. Each table is rotated in its own transaction; a
+  row counts toward the report only if it actually carried a secret; the pass is
+  idempotent in effect (plaintext preserved, only the key changes). **Testing:**
+  the crypto/traversal heart is unit-tested DB-free (`test_secret_box::rotate`,
+  `test_secret_mapping`, `test_reencrypt` for the auth-source payload rotators); the
+  full DB walk is a Postgres contract test (`tests/integration/test_reencrypt.py`,
+  skipped without `TEST_DATABASE_URL` per D13) proving every ciphertext decrypts
+  under the **new key alone** after a pass — i.e. the old key is finally droppable.
+  **Parked (carried from D39):** a `--dry-run` count, and running the pass while the
+  app is live without a brief write-freeze (today the operator quiesces writes).
 
 _Append new decisions here as `Dn — <decision>: <why>` when slices force a choice._
 

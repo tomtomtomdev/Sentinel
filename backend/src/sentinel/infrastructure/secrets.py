@@ -29,3 +29,10 @@ class FernetSecretBox:
 
     def decrypt(self, token: bytes) -> str:
         return self._fernet.decrypt(token).decode("utf-8")
+
+    def rotate(self, token: bytes) -> bytes:
+        """Re-encrypt existing ciphertext under the first key, decrypting with any
+        (`MultiFernet.rotate`). Ciphertext-to-ciphertext — plaintext is never
+        exposed — so the offline re-encryption pass can move every stored secret
+        onto the newest key and let the old one be dropped from the ring."""
+        return self._fernet.rotate(token)

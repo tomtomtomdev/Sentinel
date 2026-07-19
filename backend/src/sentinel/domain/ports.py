@@ -192,11 +192,18 @@ class SecretBox(Protocol):
     (SPEC §6). Key-ring aware so keys rotate without re-encrypting existing
     ciphertext (the `MultiFernet` adapter encrypts with the first key in the ring
     and decrypts with any). The domain only depends on this behaviour, never on
-    the crypto library."""
+    the crypto library.
+
+    `rotate` re-encrypts an existing ciphertext under the ring's *first* key
+    without materializing plaintext (`MultiFernet.rotate`: decrypt with any key,
+    encrypt with the first) — used by the offline re-encryption pass so a
+    rotated-out key can finally be dropped from the ring (PLAN D40)."""
 
     def encrypt(self, plaintext: str) -> bytes: ...
 
     def decrypt(self, token: bytes) -> str: ...
+
+    def rotate(self, token: bytes) -> bytes: ...
 
 
 class Heartbeat(Protocol):

@@ -65,3 +65,23 @@ def test_encrypts_with_the_first_key_in_the_ring() -> None:
 def test_empty_key_ring_is_rejected() -> None:
     with pytest.raises(ValueError, match="SECRET_KEY"):
         FernetSecretBox([])
+
+
+def test_rotate_re_encrypts_ciphertext_under_the_first_key() -> None:
+    # A value written under the old key, then the ring rotates (new key prepended).
+    old, new = _key(), _key()
+    token = FernetSecretBox([old]).encrypt("rotate-me")
+
+    rotated = FernetSecretBox([new, old]).rotate(token)
+
+    # After rotation the NEW key alone decrypts it — so the old key is droppable...
+    assert FernetSecretBox([new]).decrypt(rotated) == "rotate-me"
+    # ...and the old key alone no longer can (nothing left depends on it).
+    with pytest.raises(InvalidToken):
+        FernetSecretBox([old]).decrypt(rotated)
+
+
+def test_rotate_preserves_plaintext_under_a_single_key_ring() -> None:
+    box = FernetSecretBox([_key()])
+    token = box.encrypt("unchanged")
+    assert box.decrypt(box.rotate(token)) == "unchanged"

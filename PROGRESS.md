@@ -20,7 +20,36 @@
 
 ## Current state
 
-- **Phase:** **S14.5 COMPLETE — key-rotation runbook. S14 (hardening) is DONE
+- **Phase:** **S15 COMPLETE — offline re-encryption CLI (D40). Realizes the D39
+  parked follow-up, so a rotated-out `SECRET_KEY` can finally be *dropped*, not
+  just kept decrypt-only.** New `just reencrypt` /
+  `python -m sentinel.infrastructure.reencrypt` walks every secret-bearing column —
+  monitors' secret headers, auth-source credentials (login body + secret headers) +
+  oauth secrets, cached `token`/`refresh_token`, alert-channel `config` — and
+  rotates each ciphertext onto the ring's **first** key. **Primitive: new
+  `SecretBox.rotate` port method** backed by `MultiFernet.rotate`
+  (`FernetSecretBox.rotate`) — ciphertext→ciphertext (decrypt-with-any →
+  encrypt-with-first), **plaintext never materialized** — chosen over
+  decrypt→re-encrypt through the repos (which would also bump `updated_at` and hold
+  plaintext). `SecretBox` is implemented only by `FernetSecretBox`, so the port
+  addition has zero blast radius. **No drift with encryption:** the rotation helpers
+  `rotate_secret_headers`/`rotate_secret_config`/`rotate_value` (in
+  `secret_mapping.py`) reuse the same `is_secret_header`/`is_secret_config_key`
+  classifiers as the encrypt/decrypt pairs; the auth-source `request`/`oauth` field
+  layout is restated once in `reencrypt.py` (`rotate_auth_request`/`rotate_auth_oauth`,
+  cross-referenced to `auth_source_repository`). `ReEncryptor.run()` handles each
+  table in its **own transaction**, counts a row only if it actually carried a
+  secret, and is idempotent (plaintext preserved, only the key changes); returns a
+  secret-free `ReEncryptReport` (per-table counts) logged as one JSON line by the
+  CLI. README **"Dropping the old key"** now points at `just reencrypt` instead of
+  the manual re-save workaround. **No migration, no new config, no new deps.** Gate
+  green: `just test` **543/53** (+8), ruff + mypy strict clean. Real-wire smoke
+  (local Postgres): CLI against a migrated empty DB → `re-encryption complete`
+  all-zero report, exit 0; **full operator workflow** — seed a channel under
+  `<old>` → `SECRET_KEY="<new>,<old>"` → `just reencrypt` (`alert_channels: 1`) →
+  `SECRET_KEY="<new>"` alone still decrypts the stored `bot_token`, proving the old
+  key is droppable.
+- **Prior phase:** **S14.5 COMPLETE — key-rotation runbook. S14 (hardening) is DONE
   (S14.1 errors / S14.2 logging / S14.3 health / S14.4 rate-limit / S14.5
   key-rotation — D35–D39).** Operators can rotate `SECRET_KEY` from a documented
   runbook (SPEC §6, D39) — but the slice ships **no new runtime behaviour**: the
@@ -431,10 +460,26 @@
   `MonitorState` advances via `advance_state`; §3.5 read endpoints via `StatsService`;
   hourly `CheckRollup`s back 7d/30d; `GET /events` streams `check_completed`/
   `status_changed`. S5b (auth source) + S6 (scheduler + heartbeat) complete beneath.
-- **Last green commit:** S14.4 (`feat(security): brute-force damping on the auth
-  gate → 429 (S14.4)`); S14.5 staged.
-- **Test suite:** `just test` (no DB) → **535 passed, 50 skipped** (+3 from S14.5,
-  +17 from S14.4, +7 from S14.3, +10 from S14.2, +3 from S14.1). S14.5 added:
+- **Last green commit:** S14.5 (`docs(security): SECRET_KEY key-rotation runbook +
+  gen-key/gen-token recipes (S14.5)`); S15 staged.
+- **Test suite:** `just test` (no DB) → **543 passed, 53 skipped** (+8 from S15,
+  +3 from S14.5, +17 from S14.4, +7 from S14.3, +10 from S14.2, +3 from S14.1).
+  S15 added (all DB-free unit except the 3 PG-gated integration tests, which skip
+  without `TEST_DATABASE_URL`): `tests/unit/infrastructure/test_secret_box.py` (+2 —
+  `rotate` re-encrypts old-key ciphertext so the new key alone reads it / old alone
+  `InvalidToken`s it; single-key-ring rotate preserves plaintext),
+  `tests/unit/infrastructure/test_secret_mapping.py` (3 — `rotate_value` /
+  `rotate_secret_headers` / `rotate_secret_config` re-encrypt only the secret values
+  onto the new first key, non-secrets pass through untouched),
+  `tests/unit/infrastructure/test_reencrypt.py` (3 — the auth-source payload
+  rotators: `rotate_auth_request` re-encrypts body + secret headers and tolerates an
+  absent body; `rotate_auth_oauth` rotates only present client_secret/username/
+  password), and `tests/integration/test_reencrypt.py` (3 PG — seed all four
+  secret-bearing tables under `<old>`, run `ReEncryptor` with ring `[new, old]`,
+  assert every raw-row ciphertext now decrypts under `<new>` **alone** + report
+  counts; the old key can no longer read what it wrote; a second pass is idempotent).
+  Verified against **local Postgres** (`TEST_DATABASE_URL=…/sentinel_reencrypt_test`)
+  → 3 passed; plus the CLI real-wire smoke above. S14.5 added:
   `tests/unit/infrastructure/test_key_rotation.py` (3 — an executable runbook
   through the real `env-string → Settings.secret_key_ring() → FernetSecretBox`
   path: old ciphertext survives prepending a new key; new writes decrypt under the
@@ -531,7 +576,8 @@
   a clean DB, single head `d4a1b2c3e5f6`, downgrade/upgrade round-trips.
 - **Schema/migrations:** head **`e7f8a9b0c1d2`** (`state_transitions`: append-only
   confirmed-flip history, `monitor_id` index; feeds flap damping). Prior:
-  `d4a1b2c3e5f6` (`alert_channels`; `notification_logs`).
+  `d4a1b2c3e5f6` (`alert_channels`; `notification_logs`). **S15 added no migration**
+  (re-encryption rewrites existing ciphertext in place; the schema is unchanged).
 - **Deps:** unchanged (`respx` already present; notifiers use the existing `httpx`).
 - **Config:** S14.4 added `rate_limit_enabled` (True), `rate_limit_max_failures`
   (10), `rate_limit_window_seconds` (60) + the `.env.example` brute-force-damping
@@ -546,17 +592,19 @@
 
 ## Next action
 
-➡️ **PLAN §5's slice roadmap (S0–S14) is COMPLETE** — S14.5 closed out S14
-(hardening). There is no next *code* slice in the plan. The remaining gate before
-any public deploy is **operator work that can't run in this build environment**:
-the **S13 container smoke-tests** (below) and, when a key must actually be rotated,
-the new **README key-rotation runbook** (`SECRET_KEY` prepend → redeploy → keep the
-old key decrypt-only). A fresh context should (1) run the S13 smoke-tests, and (2)
-decide whether any parked follow-up below is worth promoting to a new slice — the
-strongest candidate is the **active re-encryption CLI** (D39: without it, safely
-*dropping* an old key means manually re-saving every secret-bearing record).
-**S14.5 parked:** the active re-encryption CLI (walk all secret columns,
-`MultiFernet.rotate` each) that would make dropping a key safe-and-bounded; the
+➡️ **PLAN §5's roadmap (S0–S14) is COMPLETE and S15 (the D39 re-encryption CLI, the
+strongest parked follow-up) is now done too.** There is no next *code* slice queued.
+The remaining gate before any public deploy is **operator work that can't run in
+this build environment**: the **S13 container smoke-tests** (below). A fresh context
+should (1) run the S13 smoke-tests, and (2) pick the next parked follow-up to promote
+to a slice if desired — candidates below (e.g. `X-Forwarded-For` proxy-header
+handling for the S14.4 rate limiter; the S8 cross-process SSE gap / Redis bus; a
+`--dry-run` for `just reencrypt`). **S15 parked (D40):** a `--dry-run` count for the
+re-encryptor, and running it against a live app without a brief write-freeze (today
+the operator quiesces writes so nothing is written under `<old>` mid-pass); the
+per-table transactions mean a mid-run failure leaves earlier tables done and is safe
+to re-run. **S14.5 parked (now largely resolved by S15):** ~~the active
+re-encryption CLI~~ — **done in S15**; the
 `SECRET_KEY` gen one-liners stay duplicated in the Fly.io README block on purpose
 (self-contained for operators without `just`). **S14.4 parked:** the bucket keys on
 `request.client.host`, so behind the nginx/Fly reverse proxy all clients collapse
@@ -667,6 +715,7 @@ notifiers open a short-lived `httpx.AsyncClient` per send (no shared pooled clie
   - [x] **S14.3** `/health` deepening (DB readiness) — liveness `/health` + readiness `/ready`
   - [x] **S14.4** Rate limiting (401/brute-force damping → 429)
   - [x] **S14.5** Key-rotation runbook
+- [x] **S15** Re-encryption CLI (`just reencrypt`) — post-roadmap, realizes D39/D40
 
 ---
 
@@ -684,6 +733,51 @@ notifiers open a short-lived `httpx.AsyncClient` per send (no shared pooled clie
 > Commit(s): <conventional commit subject lines>
 > Resume hint: <the very next concrete step>
 > ```
+
+### S15 — Offline re-encryption CLI  · 2026-07-19
+Done: `just reencrypt` (`python -m sentinel.infrastructure.reencrypt`) walks every
+secret-bearing column and rotates each stored ciphertext onto `SECRET_KEY`'s
+**first** key, so a rotated-out (e.g. compromised) key can finally be *dropped* from
+the ring — the step the S14.5 runbook (D39) couldn't make safe. Columns covered:
+monitors' secret headers, auth-source login body + secret headers + oauth secrets,
+cached `token`/`refresh_token`, and alert-channel `config` secrets. Uses a new
+`SecretBox.rotate` port method backed by `MultiFernet.rotate` — ciphertext→ciphertext
+(decrypt-with-any → encrypt-with-first), **plaintext never materialized**. The
+rotation helpers in `secret_mapping.py` reuse the same `is_secret_header` /
+`is_secret_config_key` classifiers as the encrypt/decrypt pairs (no drift); the
+auth-source `request`/`oauth` field layout is restated once in `reencrypt.py`
+(cross-referenced to the repo). `ReEncryptor.run()` does each table in its own
+transaction, counts a row only if it carried a secret, is idempotent, and returns a
+secret-free `ReEncryptReport` the CLI logs as one JSON line. README "Dropping the old
+key" now points at `just reencrypt`. No migration, no new config, no new deps.
+Tests: DB-free units for the crypto/traversal heart — `test_secret_box` (+2 rotate),
+`test_secret_mapping` (3), `test_reencrypt` (3, auth-source payload rotators) — plus
+`tests/integration/test_reencrypt.py` (3 PG, skipped without `TEST_DATABASE_URL`):
+seed all four tables under `<old>`, run with ring `[new, old]`, assert every raw-row
+ciphertext decrypts under `<new>` **alone** + correct report counts + old-key-drop +
+idempotent second pass. `just test` **543/53** (+8); ruff + mypy strict clean.
+Verified against **local Postgres**: integration 3 passed; CLI smoke on a migrated
+empty DB (all-zero report, exit 0) and the full operator workflow (seed under
+`<old>` → `SECRET_KEY="<new>,<old>"` → `just reencrypt` → `SECRET_KEY="<new>"` alone
+still decrypts the `bot_token`).
+Decisions: **D40** — S15 realizes the D39 follow-up; `MultiFernet.rotate` via a new
+`SecretBox.rotate` port (zero blast radius — only `FernetSecretBox` implements it)
+over decrypt→re-encrypt-through-repos (avoids bumping `updated_at` + holding
+plaintext); rotation helpers reuse the encryption classifiers to prevent drift.
+Files: `src/sentinel/domain/ports.py` (SecretBox.rotate), `.../infrastructure/
+secrets.py` (FernetSecretBox.rotate), `.../infrastructure/db/secret_mapping.py`
+(rotate_value/_secret_headers/_secret_config), `.../infrastructure/reencrypt.py`
+(new: ReEncryptor + rotate_auth_request/_oauth + CLI main), `justfile` (reencrypt
+recipe), `README.md` (Dropping-the-old-key), `PLAN.md` §5 + §7 (D40); tests:
+`tests/unit/infrastructure/test_secret_box.py`, `.../test_secret_mapping.py` (new),
+`.../test_reencrypt.py` (new), `tests/integration/test_reencrypt.py` (new).
+Follow-ups / parked: a `--dry-run` count; running against a live app without a brief
+write-freeze (today the operator quiesces writes so nothing writes under `<old>`
+mid-pass).
+Commit(s): `feat(security): offline re-encryption CLI to rotate secrets onto the new
+SECRET_KEY (S15)`.
+Resume hint: roadmap + S15 done; run the S13 container smoke-tests, or promote the
+next parked follow-up (e.g. rate-limiter `X-Forwarded-For` handling) to a slice.
 
 ### S14.5 — Key-rotation runbook  · 2026-07-19
 Done: Operators can now rotate `SECRET_KEY` from a documented runbook (SPEC §6,
