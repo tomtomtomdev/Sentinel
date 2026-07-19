@@ -20,7 +20,37 @@
 
 ## Current state
 
-- **Phase:** **S14.3 COMPLETE (`/health` deepening — DB readiness; S14 split S14.1
+- **Phase:** **S14.4 COMPLETE (rate limiting → 429; S14 split S14.1 errors /
+  S14.2 logging / S14.3 health / S14.4 rate-limit / S14.5 key-rotation — D35, D36,
+  D37, D38).** The auth gate now damps brute force (SPEC §6): repeated **failed**
+  `Authorization: Bearer` attempts from one client IP are throttled to **`429`
+  `rate_limited`** (the SPEC §5 envelope; slug reserved since S14.1) once a per-IP
+  token bucket empties, with a `Retry-After` header. **Only failed auth touches the
+  bucket** — a valid token bypasses the limiter, so a legitimate user behind a
+  shared/NAT'd IP is never locked out by an attacker on the same IP (brute-force
+  *damping*, not a general request cap). Pure token bucket in
+  `domain/logic/rate_limit.py` (`RateLimitConfig`/`BucketState`/`consume`, `now`
+  injected, clamps a backwards clock, never exceeds capacity, never raises); new
+  **`RateLimiter` port** (`domain/ports.py`, `async allow(key) -> bool`) +
+  `InProcessRateLimiter` adapter (`infrastructure/rate_limit.py`, per-key dict +
+  injected `Clock` + an `asyncio.Lock` around the read-modify-write) so a
+  Redis-backed limiter can drop in behind the same port for multi-instance. The
+  limiter is built once in `create_app` and kept on **`app.state`** (read via
+  `deps.get_rate_limiter(request)`, the `require_auth` override seam) — **not** an
+  `@lru_cache` singleton, so each app (and each test app) has isolated bucket state
+  and the existing S9a auth-gate tests needed no change. `require_auth` order:
+  valid creds return first (never throttled) → else consume the bucket → empty ⇒
+  raise `RateLimitedError` (→ 429), otherwise ⇒ `UnauthorizedError` (→ 401); a new
+  handler in `errors.py` maps `RateLimitedError` to the 429 envelope + `Retry-After`.
+  Bucket key is `request.client.host`. Config knobs `rate_limit_enabled` (on) /
+  `rate_limit_max_failures` (10) / `rate_limit_window_seconds` (60) + `.env.example`.
+  Gate green: `just test` **532/50** (+17), ruff + mypy clean; app boots. Real-wire
+  smoke (uvicorn, `AUTH_TOKEN` set, `RATE_LIMIT_MAX_FAILURES=2`): `/health` 200
+  always (ungated, no limiter); bad-token attempts 1–2 → 401, attempts 3–4 → 429
+  with `Retry-After: 60` and body `{"error":{"code":"rate_limited",...}}` — the real
+  token **absent** from the body; `/health` still 200 while the limiter is tripped.
+  **S14.5 (key-rotation runbook) is the next slice — likely the last of S14.**
+- **Prior phase:** **S14.3 COMPLETE (`/health` deepening — DB readiness; S14 split S14.1
   errors / S14.2 logging / S14.3 health / S14.4 rate-limit / S14.5 key-rotation —
   D35, D36, D37).** Liveness and readiness are now **separate probes** (D37).
   `GET /api/v1/health` stays **pure liveness** (200 `{"status":"ok"}`,
@@ -379,10 +409,24 @@
   `MonitorState` advances via `advance_state`; §3.5 read endpoints via `StatsService`;
   hourly `CheckRollup`s back 7d/30d; `GET /events` streams `check_completed`/
   `status_changed`. S5b (auth source) + S6 (scheduler + heartbeat) complete beneath.
-- **Last green commit:** S14.2 (`feat(obs): structured JSON logging + request-id
-  access middleware (S14.2)`); S14.3 staged.
-- **Test suite:** `just test` (no DB) → **515 passed, 50 skipped** (+7 from S14.3,
-  +10 from S14.2, +3 from S14.1). S14.3 added:
+- **Last green commit:** S14.3 (`feat(obs): /api/v1/ready DB-readiness probe;
+  /health stays liveness (S14.3)`); S14.4 staged.
+- **Test suite:** `just test` (no DB) → **532 passed, 50 skipped** (+17 from S14.4,
+  +7 from S14.3, +10 from S14.2, +3 from S14.1). S14.4 added:
+  `tests/unit/domain/test_rate_limit.py` (10 — full bucket starts allowed;
+  allow-until-empty-then-deny; refill after enough time; partial refill not enough;
+  refill capped at capacity; backwards clock adds no tokens; `per_window` derives
+  the refill rate; `per_window` rejects non-positive params ×3),
+  `tests/unit/infrastructure/test_rate_limit.py` (3 — allow up to capacity then
+  deny; per-key isolation; refills as the injected clock advances), and
+  `tests/integration/test_rate_limit.py` (4 — repeated failures → 429
+  `rate_limited` + `Retry-After` + no token leak; valid token never throttled even
+  when the bucket is empty; throttle refills over time via a `FixedClock`; disabled
+  limiter never 429s) — via `get_rate_limiter` overridden with a fixed-clock
+  `InProcessRateLimiter` and `httpx.ASGITransport(client=(ip, port))` for the
+  source IP, keeping the suite DB-free (D13). Real-wire smoke: uvicorn with
+  `RATE_LIMIT_MAX_FAILURES=2` → bad-token 401,401,429,429 with `Retry-After: 60`,
+  token absent from the 429 body, `/health` 200 throughout. S14.3 added:
   `tests/unit/infrastructure/test_readiness.py` (3 — `DbReadinessCheck.check()`
   True on `SELECT 1` success, False when the DB is unreachable, and False + no
   connection-string/password in any log line, via a fake session factory that
@@ -460,7 +504,9 @@
   confirmed-flip history, `monitor_id` index; feeds flap damping). Prior:
   `d4a1b2c3e5f6` (`alert_channels`; `notification_logs`).
 - **Deps:** unchanged (`respx` already present; notifiers use the existing `httpx`).
-- **Config:** S9a added `auth_token` ("" = gate open, dev only) + the `.env.example`
+- **Config:** S14.4 added `rate_limit_enabled` (True), `rate_limit_max_failures`
+  (10), `rate_limit_window_seconds` (60) + the `.env.example` brute-force-damping
+  note. Prior (S9a): `auth_token` ("" = gate open, dev only) + the `.env.example`
   "API auth gate" section with a generation one-liner. Prior (S9.3):
   `alert_flap_threshold` (5), `alert_flap_window_seconds` (600),
   `alert_renotify_after_seconds` (0), `dashboard_base_url` ("") — `.env.example`
@@ -471,16 +517,20 @@
 
 ## Next action
 
-➡️ **S14.4 — Rate limiting (401/brute-force damping → 429)** (PLAN §5/§7 D35, SPEC
-§6). Add rate limiting so repeated bad-credential hits on the auth gate (and, if
-cheap, all writes) are throttled to `429` in the SPEC §5 envelope — the
-`rate_limited` code slug is **already reserved** in `_HTTP_ERROR_CODES`
-(`errors.py`, D35). Decide the mechanism test-first (a small in-process
-token-bucket keyed by client IP is likely enough for v1; keep it behind a port/
-seam so a Redis-backed limiter can drop in for multi-instance later). The
-`require_auth` dependency (D29) is the natural composition seam. Then S14.5
-(key-rotation runbook). **S14.3 parked:** the compose/Fly healthchecks still
-target `/health` (liveness — correct restart semantics); wiring `/ready` as an
+➡️ **S14.5 — Key-rotation runbook** (PLAN §5/§7 D35, SPEC §6). Document (and, if
+useful, add a `just` recipe / smoke for) rotating `SECRET_KEY` with `MultiFernet`:
+prepend the new key, redeploy (all keys still decrypt, the first encrypts), then
+later drop the old key once nothing is encrypted under it. This is the last S14
+slice; likely a docs/README-runbook change plus a decrypt-after-rotation
+verification (the crypto is already covered by the S5a `MultiFernet` unit tests).
+On completion, S14 (hardening) is done. **S14.4 parked:** the bucket keys on
+`request.client.host`, so behind the nginx/Fly reverse proxy all clients collapse
+to the proxy IP unless uvicorn runs with proxy-header support at a trusted edge
+(deploy-config follow-up — do **not** blindly trust `X-Forwarded-For`); the per-key
+dict has no idle-bucket eviction (LRU cap parked); a general per-IP request limiter
+(beyond failed-auth damping) is parked to avoid throttling the dashboard's own
+SSE/poll traffic. **S14.3 parked:** the compose/Fly healthchecks still target
+`/health` (liveness — correct restart semantics); wiring `/ready` as an
 LB/orchestrator readiness gate is a deploy-config follow-up. **Carried:** uvicorn's
 own `uvicorn.*` loggers keep uvicorn's plain format (JSON needs a `--log-config`);
 SPEC §6 "basic runtime metrics" (checks/sec, queue depth) not yet emitted.
@@ -580,7 +630,7 @@ notifiers open a short-lived `httpx.AsyncClient` per send (no shared pooled clie
   - [x] **S14.1** Error-envelope consistency pass (catch-all 500 + framework HTTP errors)
   - [x] **S14.2** Structured JSON logging
   - [x] **S14.3** `/health` deepening (DB readiness) — liveness `/health` + readiness `/ready`
-  - [ ] **S14.4** Rate limiting (401/brute-force damping → 429)
+  - [x] **S14.4** Rate limiting (401/brute-force damping → 429)
   - [ ] **S14.5** Key-rotation runbook
 
 ---
@@ -599,6 +649,56 @@ notifiers open a short-lived `httpx.AsyncClient` per send (no shared pooled clie
 > Commit(s): <conventional commit subject lines>
 > Resume hint: <the very next concrete step>
 > ```
+
+### S14.4 — Rate limiting (brute-force damping → 429)  · 2026-07-19
+Done: The auth gate now damps brute force (SPEC §6, D38). Repeated **failed**
+`Authorization: Bearer` attempts from one client IP are throttled to **`429`
+`rate_limited`** (the SPEC §5 envelope; slug reserved since S14.1) once a per-IP
+token bucket empties, with a `Retry-After` header. **Only failed auth consults the
+bucket** — a valid token bypasses the limiter entirely, so a legitimate user behind
+a shared/NAT'd IP is never locked out by an attacker on the same IP (brute-force
+*damping*, not a general request cap). `require_auth` order: valid creds return
+first (never throttled) → else `limiter.allow(client_ip)` → empty ⇒ raise
+`RateLimitedError` (→ 429 + `Retry-After`), otherwise ⇒ `UnauthorizedError` (→ 401).
+Pure token bucket in `domain/logic/rate_limit.py`
+(`RateLimitConfig`/`BucketState`/`consume`; `now` injected per D4; clamps a
+backwards clock; caps at capacity; never raises) with a `RateLimitConfig.per_window`
+helper (rejects non-positive params → fail-at-boot). New `RateLimiter` port
+(`async allow(key) -> bool`) + `InProcessRateLimiter` adapter (per-key dict +
+injected `Clock` + an `asyncio.Lock` around the read-modify-write). **Isolation:**
+the limiter is built once in `create_app` and kept on `app.state` (read via
+`deps.get_rate_limiter(request)`), **not** an `@lru_cache` singleton, so each app
+(and each test app) has its own bucket state — which is why the existing S9a
+auth-gate tests needed no change. A Redis-backed limiter drops in behind the same
+port for multi-instance.
+Tests: `tests/unit/domain/test_rate_limit.py` (10),
+`tests/unit/infrastructure/test_rate_limit.py` (3),
+`tests/integration/test_rate_limit.py` (4) — see Test suite. `just test`
+**532/50** (+17), ruff + mypy strict clean. Real-wire smoke: uvicorn with
+`AUTH_TOKEN` + `RATE_LIMIT_MAX_FAILURES=2` — bad-token 401,401,429,429 with
+`Retry-After: 60`, the real token absent from the 429 body, `/health` 200
+throughout (ungated, no limiter).
+Decisions: **D38** (in-process per-IP token bucket damping *failed* auth only,
+behind a `RateLimiter` port, wired through `require_auth`; app-scoped `app.state`
+not an lru_cache singleton; valid creds bypass; `client.host` key; proxy/XFF +
+bucket-eviction + general request-limiter parked) added to PLAN §7.
+Files: `src/sentinel/domain/logic/rate_limit.py` (new),
+`src/sentinel/domain/ports.py` (+`RateLimiter`),
+`src/sentinel/infrastructure/rate_limit.py` (new),
+`src/sentinel/interface/api/auth.py` (+`RateLimitedError` +`_client_key` + limiter
+check), `src/sentinel/interface/api/errors.py` (+429 handler),
+`src/sentinel/interface/api/deps.py` (+`build_rate_limiter`/`get_rate_limiter`),
+`src/sentinel/interface/main.py` (+`app.state.rate_limiter`),
+`src/sentinel/config.py` (+3 knobs), `.env.example`, and the three test files.
+Follow-ups / parked: bucket keys on `request.client.host` → behind the nginx/Fly
+proxy all clients collapse to the proxy IP unless uvicorn runs with proxy-header
+support at a trusted edge (deploy follow-up; do NOT blindly trust
+`X-Forwarded-For`); per-key dict has no idle-bucket eviction (LRU cap); a general
+per-IP request limiter beyond failed-auth damping is parked (would risk throttling
+the dashboard's own SSE/poll traffic).
+Commit(s): `feat(security): brute-force damping on the auth gate → 429 (S14.4)`.
+Resume hint: start S14.5 — key-rotation runbook (docs + a decrypt-after-rotation
+smoke; `MultiFernet` crypto already unit-tested in S5a). That is the last S14 slice.
 
 ### S14.3 — `/health` deepening (DB readiness)  · 2026-07-19
 Done: Liveness and readiness are now separate probes (D37). `GET /api/v1/health`

@@ -970,6 +970,41 @@ stable (after S7), against a mock server if needed.
   gate is a deploy-config follow-up; SPEC §6 "basic runtime metrics" (checks/sec,
   queue depth) remain unshipped (carried from D36).
 
+- **D38 — S14.4 rate limiting: an in-process per-IP token bucket damping *failed*
+  auth only, behind a `RateLimiter` port, wired through the `require_auth` seam.**
+  Brute-force damping (SPEC §6, D35) throttles repeated bad-credential hits to
+  `429 rate_limited` (the §5 envelope; slug reserved in `_HTTP_ERROR_CODES` since
+  S14.1) once a client IP exceeds `RATE_LIMIT_MAX_FAILURES` within
+  `RATE_LIMIT_WINDOW_SECONDS`. **Only failed auth consumes/consults the bucket** —
+  a valid token bypasses the limiter entirely, so a legitimate user behind a
+  shared/NAT'd IP is never locked out by an attacker on the same IP; this makes it
+  brute-force *damping*, not a general request limiter (a global per-IP request cap
+  is parked — it would risk throttling the dashboard's own SSE/poll traffic). The
+  *decision* is a pure token bucket in `domain/logic/rate_limit.py`
+  (`RateLimitConfig`/`BucketState`/`consume`, `now` injected per D4, clamps
+  backwards clocks, never exceeds capacity, never raises); the `RateLimiter` port
+  (`domain/ports.py`, `async allow(key) -> bool`) has an `InProcessRateLimiter`
+  adapter (`infrastructure/rate_limit.py`, per-key dict + injected `Clock` + an
+  `asyncio.Lock` around the read-modify-write) so a **Redis-backed limiter drops in
+  behind the same port** for a multi-instance deploy. **Isolation choice:** the
+  limiter is built once in `create_app` and kept on `app.state` (read via
+  `deps.get_rate_limiter(request)`), *not* an `@lru_cache` process singleton — so
+  each running app (and each test app) has its own bucket state, which is why the
+  existing S9a auth-gate tests needed no change (a process-wide singleton would
+  bleed failed-attempt counts across tests and require overrides everywhere).
+  `require_auth` gained a `Depends(get_rate_limiter)` param and, on the failure
+  branch, raises a new interface-level `RateLimitedError` (carrying `retry_after`)
+  when the bucket is empty; a new handler in `errors.py` maps it to `429` with a
+  `Retry-After` header. Order: valid creds return first (never throttled) →
+  else consume the bucket → empty ⇒ 429, otherwise ⇒ 401. The bucket key is
+  `request.client.host`; behind a reverse proxy that's the proxy's IP unless
+  uvicorn runs with proxy-header support at a trusted edge (**parked** deploy
+  concern — do NOT blindly trust `X-Forwarded-For`, which an attacker could spoof
+  to mint a fresh bucket per request and evade the limit). The per-key dict grows
+  with distinct IPs (**parked:** idle-bucket eviction / LRU cap). Config knobs
+  `rate_limit_enabled` (default on) / `rate_limit_max_failures` (10) /
+  `rate_limit_window_seconds` (60) + `.env.example`.
+
 _Append new decisions here as `Dn — <decision>: <why>` when slices force a choice._
 
 ---

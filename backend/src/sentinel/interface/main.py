@@ -6,6 +6,7 @@ from fastapi import Depends, FastAPI
 from sentinel.infrastructure.logging_config import configure_logging
 from sentinel.interface.api import auth_sources, channels, events, health, imports, monitors
 from sentinel.interface.api.auth import require_auth
+from sentinel.interface.api.deps import build_rate_limiter
 from sentinel.interface.api.errors import register_exception_handlers
 from sentinel.interface.api.middleware import RequestContextMiddleware
 
@@ -22,6 +23,9 @@ async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
 
 def create_app() -> FastAPI:
     app = FastAPI(title="Sentinel", version="0.1.0", lifespan=_lifespan)
+    # App-scoped brute-force limiter for the auth gate (S14.4); one per app so each
+    # instance (and each test app) has isolated per-IP bucket state.
+    app.state.rate_limiter = build_rate_limiter()
     # Request-context / structured access logging wraps every request (S14.2).
     app.add_middleware(RequestContextMiddleware)
     register_exception_handlers(app)

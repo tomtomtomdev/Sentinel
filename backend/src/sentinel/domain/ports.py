@@ -232,6 +232,16 @@ class ReadinessCheck(Protocol):
     async def check(self) -> bool: ...
 
 
+class RateLimiter(Protocol):
+    """Brute-force damping for the auth gate (S14.4, SPEC §6). `allow` consumes one
+    unit against `key` (a client IP) and returns False once the key is over its
+    limit; valid traffic is never asked to `allow`, so a legitimate client is never
+    throttled. The in-process adapter keeps per-key state in memory; a Redis-backed
+    limiter can drop in behind this port for a multi-instance deploy."""
+
+    async def allow(self, key: str) -> bool: ...
+
+
 class HttpProbe(Protocol):
     """Executes one outbound HTTP request and returns a `ProbeResponse`, capturing
     status, latency, a bounded body sample, size, and (on HTTPS) the TLS leaf

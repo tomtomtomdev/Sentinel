@@ -14,7 +14,7 @@ from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from sentinel.domain.errors import NotFoundError, ValidationError
-from sentinel.interface.api.auth import UnauthorizedError
+from sentinel.interface.api.auth import RateLimitedError, UnauthorizedError
 
 logger = logging.getLogger("sentinel.interface")
 
@@ -60,6 +60,17 @@ def register_exception_handlers(app: FastAPI) -> None:
             status_code=401,
             content=_envelope("unauthorized", str(exc)),
             headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    @app.exception_handler(RateLimitedError)
+    async def _on_rate_limited(_request: Request, exc: RateLimitedError) -> JSONResponse:
+        # Brute-force damping on the auth gate (S14.4): too many failed attempts →
+        # 429 in the same envelope, with a Retry-After hint when known.
+        headers = {"Retry-After": str(exc.retry_after)} if exc.retry_after is not None else None
+        return JSONResponse(
+            status_code=429,
+            content=_envelope("rate_limited", str(exc)),
+            headers=headers,
         )
 
     @app.exception_handler(RequestValidationError)

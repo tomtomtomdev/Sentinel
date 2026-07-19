@@ -48,6 +48,14 @@ class Settings(BaseSettings):
     # `Authorization: Bearer <AUTH_TOKEN>`. Empty disables the gate — dev only;
     # never expose the API without it (PLAN §6).
     auth_token: str = ""
+    # Rate limiting (S14.4, SPEC §6): brute-force damping on the auth gate. After
+    # `rate_limit_max_failures` failed-credential attempts from one client IP the
+    # bucket empties and further failures get 429 until it refills over
+    # `rate_limit_window_seconds`. Valid credentials are never throttled. Disable
+    # only for trusted single-host/dev use.
+    rate_limit_enabled: bool = True
+    rate_limit_max_failures: int = 10
+    rate_limit_window_seconds: int = 60
 
     def secret_key_ring(self) -> list[str]:
         """Parse `SECRET_KEY` into an ordered, whitespace-trimmed key ring,

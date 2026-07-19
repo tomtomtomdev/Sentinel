@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 
+from fastapi import Request
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from sentinel.application.alert_channel_service import AlertChannelService
@@ -17,6 +18,7 @@ from sentinel.application.check_service import CheckService
 from sentinel.application.monitor_service import MonitorService
 from sentinel.application.stats_service import StatsService
 from sentinel.config import get_settings
+from sentinel.domain.logic.rate_limit import RateLimitConfig
 from sentinel.domain.ports import (
     AlertChannelRepository,
     AuthSourceRepository,
@@ -25,6 +27,7 @@ from sentinel.domain.ports import (
     HttpProbe,
     NotificationLogRepository,
     Notifier,
+    RateLimiter,
     ReadinessCheck,
     SecretBox,
     StateTransitionRepository,
@@ -48,6 +51,7 @@ from sentinel.infrastructure.db.token_store import SqlTokenStore
 from sentinel.infrastructure.events import InProcessEventBus
 from sentinel.infrastructure.notifiers import EmailNotifier, TelegramNotifier, WebhookNotifier
 from sentinel.infrastructure.probe import HttpxProbe
+from sentinel.infrastructure.rate_limit import InProcessRateLimiter
 from sentinel.infrastructure.secrets import FernetSecretBox
 from sentinel.infrastructure.url_guard import GuardedHttpProbe, SsrfUrlGuard
 
@@ -66,6 +70,28 @@ def get_readiness_check() -> ReadinessCheck:
     """DB-backed readiness for `GET /api/v1/ready` (SPEC §6). Reuses the shared
     session factory so the probe hits the same engine the app serves from."""
     return DbReadinessCheck(get_session_factory())
+
+
+def build_rate_limiter() -> RateLimiter:
+    """Construct the auth-gate brute-force limiter (S14.4). Called once per app in
+    `create_app`; the instance is kept on `app.state` so each running app has
+    isolated per-IP bucket state (and each test app starts fresh)."""
+    settings = get_settings()
+    return InProcessRateLimiter(
+        clock=get_clock(),
+        config=RateLimitConfig.per_window(
+            max_events=settings.rate_limit_max_failures,
+            window_seconds=settings.rate_limit_window_seconds,
+        ),
+    )
+
+
+def get_rate_limiter(request: Request) -> RateLimiter:
+    """The app-scoped rate limiter, read from `app.state` (populated by
+    `create_app`). This is the override seam for `require_auth`; a Redis-backed
+    limiter would drop in behind the same `RateLimiter` port."""
+    limiter: RateLimiter = request.app.state.rate_limiter
+    return limiter
 
 
 @lru_cache
