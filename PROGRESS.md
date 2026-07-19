@@ -20,7 +20,32 @@
 
 ## Current state
 
-- **Phase:** **S12 COMPLETE (S12.3 — live updates; split S12.1 chart+runs /
+- **Phase:** **S13.1 COMPLETE (backend image + compose; S13 split S13.1 image /
+  S13.2 frontend proxy / S13.3 fly+runbook — D34).** The backend now
+  containerizes: `backend/Dockerfile` is a two-stage build (uv builder →
+  `python:3.12-slim` runtime, non-root uid 10001, `UV_PYTHON_DOWNLOADS=0` so the
+  copied `/app/.venv` matches the runtime interpreter) that runs **both**
+  processes — `CMD` is `uvicorn sentinel.interface.main:app` and the
+  worker/migrate services override the command. `docker-compose.yml` is the
+  one-command self-host stack (PLAN §6): `db` (`postgres:16-alpine`, `pgdata`
+  volume, `pg_isready` healthcheck) → `migrate` (one-shot `alembic upgrade
+  head`, `restart: "no"`) → `web` (uvicorn, published on `${WEB_PORT:-8000}`,
+  urllib health probe) + `worker` (`python -m sentinel.infrastructure.
+  scheduler`); web/worker gate on `migrate` `service_completed_successfully`,
+  all three share one built `image: sentinel-backend` and a YAML-anchor env
+  block (`DATABASE_URL` → the `db` service, `SECRET_KEY`, `AUTH_TOKEN`,
+  `SSRF_GUARD_ENABLED`, `DASHBOARD_BASE_URL`, `HEARTBEAT_URL`). Root
+  `.env.example` documents the two REQUIRED secrets (`AUTH_TOKEN`, `SECRET_KEY`)
+  with generation one-liners + the "empty AUTH_TOKEN = gate open, never expose"
+  warning; `backend/.dockerignore` keeps the context lean. **Docker is not
+  installed in this build environment**, so the compose file was validated
+  statically (PyYAML parse + anchor-merge assertion: all three services resolve
+  to `image=sentinel-backend`, correct commands, 6 shared env keys) and the
+  migration command is already covered by CI (`alembic upgrade head` on
+  `postgres:16`) — the **end-to-end `docker compose up` boot is an operator
+  smoke-test** (runbook lands in S13.3), not verified in-repo. Backend Python
+  untouched → gate green (`just test` 495/50, ruff + mypy clean).
+- **Prior phase:** **S12 COMPLETE (S12.3 — live updates; split S12.1 chart+runs /
   S12.2 sparkline / S12.3 live).** The dashboard and detail pages now update
   live without polling: `src/lib/sse.ts` reads the S9a-gated
   `GET /api/v1/events` with a **fetch-based SSE reader** (D33 — `EventSource`
@@ -242,8 +267,8 @@
   `MonitorState` advances via `advance_state`; §3.5 read endpoints via `StatsService`;
   hourly `CheckRollup`s back 7d/30d; `GET /events` streams `check_completed`/
   `status_changed`. S5b (auth source) + S6 (scheduler + heartbeat) complete beneath.
-- **Last green commit:** S12.2 (`feat(frontend): dashboard 26-bar sparkline per
-  monitor card (S12.2)`); S12.3 staged.
+- **Last green commit:** S12.3 (`feat(frontend): live dashboard updates via
+  authed fetch-SSE reader — S12 complete (S12.3)`); S13.1 staged.
 - **Test suite:** `just test` (no DB) → **495 passed, 50 skipped** (+12 from S10.2).
   With `TEST_DATABASE_URL=…/sentinel_test` → **545 passed** (no skips). S10.2 added:
   `tests/unit/application/test_retention_service.py` (6 — per-store cutoffs + report
@@ -314,12 +339,23 @@
 
 ## Next action
 
-➡️ **Begin S13 — containerize & deploy** (PLAN §5): multi-stage Dockerfiles
-(backend + frontend build), `docker-compose.yml` (web + worker + postgres, one
-command), Fly.io config with a release migration step, README runbook — **must
-set `AUTH_TOKEN`** (empty = gate open, D29) and `SECRET_KEY`; include the "do
-not expose without the auth gate" warning. Smoke-test the compose stack.
-Consider while in there: self-hosted fonts, frontend CI job, recharts
+➡️ **S13.2 — frontend image + reverse proxy (single origin).** Multi-stage
+`frontend/Dockerfile` (node+pnpm build → nginx serving `dist/`), `nginx.conf`
+that serves the SPA with a history-fallback **and** reverse-proxies `/api/` →
+the `web` service with **buffering off + long read timeout** (so the S12.3 SSE
+stream at `/api/v1/events` works through nginx), `frontend/.dockerignore`, and a
+`frontend` service added to `docker-compose.yml` (published on
+`${FRONTEND_PORT:-8080}`, `depends_on: web`). Then the whole app is one origin —
+no CORS, no token in URLs. Verify `pnpm build` locally (the image's build
+stage). Then **S13.3** — `backend/fly.toml` (web + worker process groups,
+`release_command = alembic upgrade head`, **note the `postgresql+asyncpg://`
+scheme** since Fly PG attach sets a bare `postgres://` URL) + README runbook
+(compose one-command + Fly steps + `AUTH_TOKEN`/`SECRET_KEY` generation +
+do-not-expose warning + the S8 cross-process event gap note). Docker/flyctl are
+**not installed here** — author + static-validate; the operator runs the boot
+smoke-test.
+
+Consider while in there: self-hosted fonts, frontend CI job (PLAN §6), recharts
 code-split (all parked at S11.1/S12.1).
 
 **Parked follow-ups from S11.1** (not blockers): the auth token has no settings
@@ -393,7 +429,10 @@ notifiers open a short-lived `httpx.AsyncClient` per send (no shared pooled clie
   - [x] **S12.1** Detail-page latency chart (Recharts) + recent runs table
   - [x] **S12.2** Dashboard 26-bar sparkline
   - [x] **S12.3** Live updates via fetch-based SSE reader (D33)
-- [ ] **S13** Containerize & deploy
+- [ ] **S13** Containerize & deploy _(split — see log)_
+  - [x] **S13.1** Backend image + compose (db → migrate → web + worker)
+  - [ ] **S13.2** Frontend image + reverse proxy (single origin)
+  - [ ] **S13.3** Fly.io config + README runbook
 - [ ] **S14** Hardening
 
 ---
@@ -412,6 +451,56 @@ notifiers open a short-lived `httpx.AsyncClient` per send (no shared pooled clie
 > Commit(s): <conventional commit subject lines>
 > Resume hint: <the very next concrete step>
 > ```
+
+### S13.1 — Backend image + compose (db → migrate → web + worker)  · 2026-07-19
+Done: The backend containerizes and the self-host stack is defined (PLAN §5/§6,
+D34). `backend/Dockerfile` — two stages: a `python:3.12-slim-bookworm` builder
+with the `uv` binary copied in (`UV_PYTHON_DOWNLOADS=0`, `UV_COMPILE_BYTECODE=1`,
+`UV_LINK_MODE=copy`) does a two-layer install (deps from `pyproject.toml`+
+`uv.lock` with `--no-install-project`, then `src`/`alembic`/`alembic.ini` +
+project install), and a slim runtime stage that copies `/app` (incl. the
+`.venv`) as a non-root `sentinel` user (uid 10001), puts `/app/.venv/bin` on
+`PATH`, `EXPOSE 8000`, and defaults `CMD` to `uvicorn
+sentinel.interface.main:app`. One image, both processes. `docker-compose.yml`
+(repo root): `db` (`postgres:16-alpine` + `pgdata` volume + `pg_isready`
+healthcheck), `migrate` (one-shot `alembic upgrade head`, `restart: "no"`,
+waits for `db` healthy), `web` (uvicorn, `${WEB_PORT:-8000}:8000`, urllib-based
+healthcheck on `/api/v1/health`), `worker` (`python -m
+sentinel.infrastructure.scheduler`); `web`+`worker` wait on `migrate`
+`service_completed_successfully`. All three backend services share a
+`&backend-build` anchor (one `image: sentinel-backend`, built once) and a
+`&backend-env` anchor (`DATABASE_URL` pointing at the `db` service +
+`SECRET_KEY`/`AUTH_TOKEN`/`SSRF_GUARD_ENABLED`/`DASHBOARD_BASE_URL`/
+`HEARTBEAT_URL`, all `${VAR:-default}` from compose's `.env`). Root
+`.env.example` (compose config, distinct from `backend/.env.example`) documents
+the two REQUIRED secrets with generation one-liners + the "empty AUTH_TOKEN =
+gate OPEN, never expose" warning; `backend/.dockerignore` trims the context.
+Tests: no new automated tests — infra artifacts. Static validation instead:
+PyYAML parses `docker-compose.yml` and the `<<:` anchor merge resolves as
+intended (all of migrate/web/worker → `image=sentinel-backend`, right commands,
+same 6 env keys); the migration command is already exercised by CI (`alembic
+upgrade head` on `postgres:16`). Backend Python untouched → `just test` 495/50,
+ruff + mypy clean. **Docker is not installed in this environment**, so
+`docker compose up` (build + boot + `/api/v1/health` through the stack) is an
+operator smoke-test documented in the S13.3 runbook — NOT verified in-repo.
+Decisions: **D34** (S13 split S13.1–S13.3; one backend image with the process
+chosen by command; migrations as a one-shot service gating web/worker; slim
+runtime because asyncpg needs no libpq; Docker-unavailable → static validation +
+operator smoke-test) added to PLAN §7.
+Files: `backend/Dockerfile` (new), `backend/.dockerignore` (new),
+`docker-compose.yml` (new), `.env.example` (new).
+Follow-ups / parked: no frontend service yet (S13.2); no `fly.toml`/runbook yet
+(S13.3); the compose stack is unverified until run on a Docker host; `web` is
+published directly on 8000 for now (S13.2 fronts it with nginx on 8080 but keeps
+8000 for debugging); no image tag/version pinning for `uv:latest` (bump
+deliberately); no container smoke-test in CI (PLAN §6 frontend-CI item still
+parked).
+Commit(s): `chore(deploy): backend Dockerfile + compose stack (db/migrate/web/
+worker) — S13.1`.
+Resume hint: start S13.2 — `frontend/Dockerfile` (node/pnpm build → nginx),
+`frontend/nginx.conf` (SPA history-fallback + `/api/` proxy to `web` with
+`proxy_buffering off` for SSE), add the `frontend` service to compose; verify
+`pnpm build` locally first.
 
 ### S12.3 — Live updates via fetch-based SSE reader (finishes S12)  · 2026-07-18
 Done: Dashboards update without polling (SPEC §3.6). New `src/lib/sse.ts`:

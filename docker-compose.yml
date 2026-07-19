@@ -1,0 +1,85 @@
+# Sentinel — one-command self-host stack (PLAN §6).
+# Brings up Postgres, runs migrations to completion, then starts the FastAPI
+# web API and the scheduler worker (the frontend is added in S13.2).
+#
+#   cp .env.example .env          # then set AUTH_TOKEN + SECRET_KEY
+#   docker compose up --build
+#
+# ⚠️  With AUTH_TOKEN empty the API auth gate is OPEN — every request is
+#     accepted. That is acceptable ONLY on a trusted localhost. NEVER expose
+#     this stack to a network without setting AUTH_TOKEN (and SECRET_KEY).
+
+# Shared build + image for all three backend processes: compose builds the
+# image once and web/worker/migrate reuse it.
+x-backend-build: &backend-build
+  build:
+    context: ./backend
+  image: sentinel-backend
+
+# Shared environment for the backend processes (12-factor; see backend/config.py).
+x-backend-env: &backend-env
+  DATABASE_URL: postgresql+asyncpg://sentinel:${POSTGRES_PASSWORD:-sentinel}@db:5432/sentinel
+  SECRET_KEY: ${SECRET_KEY:-}
+  AUTH_TOKEN: ${AUTH_TOKEN:-}
+  SSRF_GUARD_ENABLED: ${SSRF_GUARD_ENABLED:-true}
+  DASHBOARD_BASE_URL: ${DASHBOARD_BASE_URL:-}
+  HEARTBEAT_URL: ${HEARTBEAT_URL:-}
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: sentinel
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-sentinel}
+      POSTGRES_DB: sentinel
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sentinel -d sentinel"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  # One-shot: apply migrations to head, then exit. web/worker wait for it.
+  migrate:
+    <<: *backend-build
+    command: ["alembic", "upgrade", "head"]
+    environment: *backend-env
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
+
+  web:
+    <<: *backend-build
+    command: ["uvicorn", "sentinel.interface.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    environment: *backend-env
+    ports:
+      - "${WEB_PORT:-8000}:8000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test:
+        - "CMD"
+        - "python"
+        - "-c"
+        - "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/api/v1/health').status==200 else 1)"
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
+  worker:
+    <<: *backend-build
+    command: ["python", "-m", "sentinel.infrastructure.scheduler"]
+    environment: *backend-env
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+volumes:
+  pgdata:

@@ -837,6 +837,30 @@ stable (after S7), against a mock server if needed.
   `AppRoutes`) maps both event kinds to two invalidations: the monitor-list
   summary query and the `["monitors", <id>]` prefix (detail + stats + results →
   chart, runs table, sparkline).
+- **D34 — S13 split S13.1–S13.3; containerization architecture.** S13
+  (containerize & deploy) is split like S11/S12: **S13.1** backend image +
+  compose (`db`→`migrate`→`web`+`worker`), **S13.2** frontend image + reverse
+  proxy (single origin), **S13.3** Fly.io config + README runbook.
+  - **One backend image, process chosen by command.** The web API and the
+    scheduler worker share a single multi-stage image (`backend/Dockerfile`,
+    uv builder → slim runtime, non-root uid 10001); the `CMD` defaults to
+    `uvicorn`, and the worker/migrate services override it. Avoids two nearly
+    identical images and guarantees web+worker run the same code.
+  - **Migrations as a one-shot `migrate` service, not an entrypoint.** A
+    dedicated compose service runs `alembic upgrade head` to completion; `web`
+    and `worker` gate on `service_completed_successfully`. Keeps migration a
+    single serialized step (no race between two booting app containers) and
+    mirrors Fly's `release_command` (S13.3) so both paths migrate the same way.
+    `db` gates the whole thing on a `pg_isready` healthcheck.
+  - **`asyncpg` needs no `libpq`, so the runtime stays `python:3.12-slim`** with
+    no apt build/runtime deps (cryptography/uvloop/httptools/asyncpg all ship
+    cp312 manylinux wheels). `UV_PYTHON_DOWNLOADS=0` pins uv to the base image's
+    Python so the copied venv's interpreter matches the runtime stage.
+  - **Docker not available in the build environment** — the compose file is
+    validated statically (YAML + anchor merge) and the migration command is
+    already exercised by CI (`alembic upgrade head` on `postgres:16`), but the
+    end-to-end container boot is a smoke-test the operator runs on a Docker host
+    (documented in the S13.3 runbook), not something verified in-repo.
 
 _Append new decisions here as `Dn — <decision>: <why>` when slices force a choice._
 

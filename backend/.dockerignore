@@ -1,0 +1,17 @@
+# Keep the build context small and free of local/dev state. The Dockerfile only
+# COPYs pyproject.toml, uv.lock, src/, alembic/, alembic.ini — everything else
+# here is belt-and-braces so a stray file never bloats or poisons a build.
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+tests/
+.env
+*.env
+!.env.example
+Dockerfile
+.dockerignore
