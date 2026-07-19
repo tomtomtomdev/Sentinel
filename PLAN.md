@@ -869,12 +869,24 @@ stable (after S7), against a mock server if needed.
     so the S12.3 SSE stream (`/api/v1/events`) isn't buffered. The frontend is
     the entry point (`${FRONTEND_PORT:-8080}`); `web` stays published on 8000
     for debugging.
-  - **Docker not available in the build environment** — the compose file is
-    validated statically (YAML + anchor merge) and the migration command is
-    already exercised by CI (`alembic upgrade head` on `postgres:16`); `pnpm
-    build` (the frontend image's build stage) is run locally. But the end-to-end
-    container boot is a smoke-test the operator runs on a Docker host
-    (documented in the S13.3 runbook), not something verified in-repo.
+  - **Fly.io = backend two-process app + release migration (S13.3).**
+    `backend/fly.toml` (app root = `backend/`, so it reuses `backend/Dockerfile`)
+    defines a `web` process (`uvicorn … --port 8080`, the only `[http_service]`)
+    and a `worker` process group (the scheduler), with
+    `release_command = "alembic upgrade head"` — the exact mirror of the compose
+    `migrate` service. Scoped to the backend per PLAN §6; the SPA stays a
+    same-origin compose concern (a Fly SPA deploy would be a separate app and,
+    if cross-origin, need a CORS pass — parked to S14). Runbook flags the
+    **`postgresql+asyncpg://` gotcha**: Fly PG attach sets a bare `postgres://`
+    `DATABASE_URL` that neither the app nor alembic can use, so `DATABASE_URL`
+    must be re-set as an explicit secret with the `+asyncpg` driver.
+  - **Docker/flyctl not available in the build environment** — the compose file
+    is validated statically (YAML + anchor merge), `fly.toml` is validated as
+    TOML, and the migration command is already exercised by CI (`alembic upgrade
+    head` on `postgres:16`); `pnpm build` (the frontend image's build stage) is
+    run locally. But the end-to-end container boot (`docker compose up`, `nginx
+    -t`) and `fly deploy` are smoke-tests the operator runs on a Docker/Fly host
+    (documented in the README runbook), not something verified in-repo.
 
 _Append new decisions here as `Dn — <decision>: <why>` when slices force a choice._
 

@@ -20,7 +20,31 @@
 
 ## Current state
 
-- **Phase:** **S13.2 COMPLETE (frontend image + reverse proxy; S13 split S13.1
+- **Phase:** **S13 COMPLETE (S13.3 — Fly.io config + README runbook; split S13.1
+  backend image / S13.2 frontend proxy / S13.3 fly+runbook — D34).** Sentinel is
+  fully containerized with two documented deploy paths. `backend/fly.toml`
+  defines the managed path (PLAN §6): a `web` process
+  (`uvicorn … --port 8080`, the only `[http_service]`, `auto_stop_machines=off`
+  + `min_machines_running=1` so the dashboard/SSE stay up) and a `worker`
+  process group (the scheduler), `[deploy] release_command = "alembic upgrade
+  head"` (mirrors the compose `migrate` service), per-process `[[vm]]` sizes;
+  build reuses `backend/Dockerfile` (fly.toml lives in `backend/`). The README
+  is now a **deploy runbook**: (1) local dev (`just setup/test/run` +
+  `just front-dev` proxying to :8000), (2) **self-host via Docker Compose** —
+  `cp .env.example .env`, generate `AUTH_TOKEN` + `SECRET_KEY` with the given
+  one-liners, `docker compose up --build`/`just up`, open **:8080**; a service
+  table + key-rotation note, (3) **Fly.io** — `fly launch --no-deploy`, attach
+  Postgres, `fly secrets set` (with the **`postgresql+asyncpg://` scheme fix**
+  since PG attach sets a bare `postgres://`), `fly deploy`. Two callouts: the
+  bold **do-not-expose-without-`AUTH_TOKEN`** warning, and the **S8
+  cross-process event gap** (worker-run checks don't reach the API's in-memory
+  SSE bus, so under the web/worker split live updates cover manual/API-triggered
+  checks; scheduled results appear on the next refetch — parked Redis drop-in).
+  `fly.toml` validated as TOML; backend gate unchanged (495/50, ruff + mypy
+  clean); frontend suite 63 passed. **Docker/flyctl not installed here** —
+  `docker compose up`, `nginx -t`, and `fly deploy` are operator smoke-tests, not
+  verified in-repo. **S14 (hardening) is the next slice.**
+- **Prior phase:** **S13.2 COMPLETE (frontend image + reverse proxy; S13 split S13.1
   image / S13.2 frontend proxy / S13.3 fly+runbook — D34).** The whole app now
   containerizes as a **single origin**. `frontend/Dockerfile` is a two-stage
   build: `node:22-bookworm-slim` + corepack-pinned `pnpm@9.15.0` runs `pnpm
@@ -288,8 +312,8 @@
   `MonitorState` advances via `advance_state`; §3.5 read endpoints via `StatsService`;
   hourly `CheckRollup`s back 7d/30d; `GET /events` streams `check_completed`/
   `status_changed`. S5b (auth source) + S6 (scheduler + heartbeat) complete beneath.
-- **Last green commit:** S13.1 (`chore(deploy): backend Dockerfile + compose
-  stack (db/migrate/web/worker) — S13.1`); S13.2 staged.
+- **Last green commit:** S13.2 (`chore(deploy): frontend nginx image + /api
+  reverse proxy in compose — S13.2`); S13.3 staged.
 - **Test suite:** `just test` (no DB) → **495 passed, 50 skipped** (+12 from S10.2).
   With `TEST_DATABASE_URL=…/sentinel_test` → **545 passed** (no skips). S10.2 added:
   `tests/unit/application/test_retention_service.py` (6 — per-store cutoffs + report
@@ -360,26 +384,27 @@
 
 ## Next action
 
-➡️ **S13.3 — Fly.io config + README runbook (finishes S13).** `backend/fly.toml`
-(app root = `backend/`): a `web` process (`uvicorn … --port 8080`) + a `worker`
-process group (`python -m sentinel.infrastructure.scheduler`), `[deploy]
-release_command = "alembic upgrade head"`, `[http_service]` on the web process
-only, per-process `[[vm]]` sizes. **Document the `postgresql+asyncpg://` scheme
-gotcha** — Fly Postgres attach sets a bare `postgres://` `DATABASE_URL`, but the
-app/alembic need the `+asyncpg` driver, so `DATABASE_URL` must be set as an
-explicit secret. Rewrite the README deploy section into a runbook: (1) compose
-one-command self-host (`cp .env.example .env`, generate `AUTH_TOKEN` +
-`SECRET_KEY`, `docker compose up --build`, open `:8080`), (2) Fly steps (launch,
-attach PG, `fly secrets set` AUTH_TOKEN/SECRET_KEY/DATABASE_URL, `fly deploy`);
-plus the **do-not-expose-without-the-gate** warning and a note on the **S8
-cross-process event gap** (worker checks don't reach the API's SSE stream until
-the parked Redis bus lands — with the compose split the dashboard's live
-updates only cover manual/API-triggered checks). Then update PROGRESS + the
-checklist and mark S13 complete. flyctl is **not installed here** — author +
-review only; the operator runs `fly deploy`.
+➡️ **Begin S14 — hardening** (PLAN §5): rate limiting (esp. the 401 path,
+brute-force damping), structured logging, `/health` deepening (DB reachability),
+an error-envelope consistency pass, and a key-rotation runbook. Pick the
+highest-value item first (a failing test encoding its acceptance criterion), one
+slice at a time.
 
-Consider while in there: self-hosted fonts, frontend CI job (PLAN §6), recharts
-code-split (all parked at S11.1/S12.1).
+**Before/alongside S14, the operator must run the S13 container smoke-tests**
+(not verifiable in this build environment — no Docker/flyctl/nginx): `docker
+compose up --build` → confirm `migrate` exits 0, `web`/`worker` start, the SPA
+loads at `:8080`, `GET /api/v1/health` answers through the nginx proxy, a manual
+check streams over SSE, and `nginx -t` passes. If anything fails, that fix is
+the real next slice.
+
+**Parked follow-ups from S13** (not blockers): the SPA is compose-only
+single-origin — a **Fly SPA deploy** would be a separate app and, if
+cross-origin, needs a **CORS pass** (S14); the **S8 cross-process event gap**
+means worker-run checks don't stream to the API's SSE (parked Redis bus);
+`uv:latest`/base images aren't digest-pinned (bump deliberately); no **container
+smoke-test in CI** and no **frontend CI job** (PLAN §6); fonts still load from
+the Google Fonts CDN (self-host if the deploy must be offline); recharts bundle
+>500 kB (code-split parked).
 
 **Parked follow-ups from S11.1** (not blockers): the auth token has no settings
 UI yet (localStorage/`VITE_AUTH_TOKEN` only — add an entry surface when a 401 is
@@ -452,10 +477,10 @@ notifiers open a short-lived `httpx.AsyncClient` per send (no shared pooled clie
   - [x] **S12.1** Detail-page latency chart (Recharts) + recent runs table
   - [x] **S12.2** Dashboard 26-bar sparkline
   - [x] **S12.3** Live updates via fetch-based SSE reader (D33)
-- [ ] **S13** Containerize & deploy _(split — see log)_
+- [x] **S13** Containerize & deploy _(split — see log)_
   - [x] **S13.1** Backend image + compose (db → migrate → web + worker)
   - [x] **S13.2** Frontend image + reverse proxy (single origin)
-  - [ ] **S13.3** Fly.io config + README runbook
+  - [x] **S13.3** Fly.io config + README runbook
 - [ ] **S14** Hardening
 
 ---
@@ -474,6 +499,50 @@ notifiers open a short-lived `httpx.AsyncClient` per send (no shared pooled clie
 > Commit(s): <conventional commit subject lines>
 > Resume hint: <the very next concrete step>
 > ```
+
+### S13.3 — Fly.io config + README runbook (finishes S13)  · 2026-07-19
+Done: The deploy artifacts and operator runbook (PLAN §5/§6, D34). `backend/
+fly.toml` — the managed path: `[processes]` `web = uvicorn … --port 8080` +
+`worker = python -m sentinel.infrastructure.scheduler`; `[deploy]
+release_command = "alembic upgrade head"` (mirrors the compose `migrate`
+service, runs before new machines take traffic); `[http_service]` bound to the
+`web` process only (`internal_port 8080`, `force_https`, `auto_stop_machines =
+off` + `min_machines_running = 1` so the dashboard + long-lived SSE stay up);
+per-process `[[vm]]` (512mb each); `[build] dockerfile = "Dockerfile"` (fly.toml
+lives in `backend/` so it reuses the same image compose builds). README rewritten
+into a deploy runbook: **local dev** (`just setup/test/run`, `just front-dev`),
+**self-host via Docker Compose** (copy `.env.example`, generate `AUTH_TOKEN` +
+`SECRET_KEY` with the shown one-liners, `docker compose up --build` / `just up`,
+open `:8080`; a service-role table + Fernet key-rotation note), and **Fly.io**
+(`fly launch --no-deploy`, attach Postgres, `fly secrets set` with the
+**`postgresql+asyncpg://` scheme fix** for the bare `postgres://` that attach
+sets, `fly deploy`; an invariants recap). Two callouts: the bold
+**do-not-expose-without-`AUTH_TOKEN`** warning at the top of Deploy, and the
+**S8 cross-process event gap** (worker-run checks don't reach the API's
+in-memory SSE bus, so under the split live updates cover manual/API-triggered
+checks; scheduled results show on the next refetch — parked Redis drop-in).
+Tests: no new automated tests — infra/docs. Validation: `fly.toml` parses as
+valid TOML (asserted app/processes/release_command/http_service/vm structure);
+README claims cross-checked (Vite dev port 5173 + `/api`→:8000 proxy from
+`vite.config.ts`; compose service names/ports; generation one-liners match
+`config.py`/`.env.example`). Backend Python untouched → `just test` 495/50, ruff
++ mypy clean; frontend suite 63 passed. **flyctl/Docker/nginx not installed
+here** — `fly deploy`, `docker compose up`, and `nginx -t` are operator
+smoke-tests, not verified in-repo (README says so).
+Decisions: **D34** extended (Fly = backend two-process app + release migration;
+SPA stays a same-origin compose concern, cross-origin Fly SPA → CORS parked;
+`postgresql+asyncpg://` secret gotcha; Docker/flyctl-unavailable → static
+validation + operator smoke-test).
+Files: `backend/fly.toml` (new), `README.md` (deploy runbook rewrite).
+Follow-ups / parked: operator must run the container/deploy smoke-tests (see
+Next action); Fly SPA deploy + CORS pass parked (S14); no container smoke-test in
+CI / no frontend CI job (PLAN §6); base images not digest-pinned; fonts from CDN;
+recharts bundle >500 kB.
+Commit(s): `docs(deploy): fly.toml (web+worker+release migration) + README
+runbook — S13 complete (S13.3)`.
+Resume hint: start S14 (hardening) — but first the operator should smoke-test
+`docker compose up` (migrate exits 0; SPA at :8080 → `/api` proxied incl. SSE;
+`nginx -t`); a failure there is the real next slice.
 
 ### S13.2 — Frontend image + reverse proxy (single origin)  · 2026-07-19
 Done: The SPA containerizes and the compose stack is now the whole app on one
